@@ -1095,11 +1095,6 @@ function takeoverAiSeat(lobbyId, seatIndex) {
     if (!name) return;
   }
 
-  // Ensure spectator intent, then request takeover.
-  if (state.session.role !== "spectator") {
-    state.session.role = "spectator";
-    state.session.seatIndex = -1;
-  }
   state.session.name = name;
   emitSocket(EVENTS.LOBBY_TAKEOVER_AI, { lobbyId, seatIndex, playerName: name });
 }

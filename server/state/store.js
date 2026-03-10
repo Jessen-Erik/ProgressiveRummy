@@ -140,10 +140,7 @@ export class LobbyStore {
     }
 
     const session = this.upsertSession(socketId, playerName);
-    // Allow takeover from spectator or unassigned users.
-    if (session.role !== "spectator" && session.role !== "none") {
-      return { ok: false, reason: "Only spectators can take over an AI seat." };
-    }
+    // Taking over AI seat always promotes caller to a human player in this lobby.
 
     const idx = Number(seatIndex);
     if (!Number.isInteger(idx) || idx < 0 || idx >= lobby.maxPlayers) return { ok: false, reason: "Invalid seat." };
