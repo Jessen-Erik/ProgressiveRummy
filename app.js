@@ -83,7 +83,8 @@ const state = {
   roundSummary: null,
   showRoundSummary: false,
   roundRevealEndsAt: 0,
-  roundRevealShownFor: 0
+  roundRevealShownFor: 0,
+  roundRevealPending: false
 };
 state.selectedCardBackStyle = 1;
 
@@ -158,7 +159,8 @@ function applyGameStateSnapshot(gameState) {
   state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
   if (gameState.round !== previousRound && state.roundRevealShownFor !== gameState.round) {
     state.roundRevealShownFor = gameState.round;
-    state.roundRevealEndsAt = Date.now() + 1600;
+    state.roundRevealEndsAt = 0;
+    state.roundRevealPending = true;
   }
 
   const lobby = activeLobby();
@@ -400,6 +402,13 @@ function renderFlippingCardModel(card, backStyle, delayMs) {
       </div>
     </div>
   `;
+}
+
+function startRoundRevealAnimation() {
+  if (!state.roundRevealPending) return;
+  state.roundRevealPending = false;
+  state.roundRevealEndsAt = Date.now() + 1600;
+  renderHand();
 }
 
 function shuffle(arr) {
@@ -1139,7 +1148,8 @@ function startRound() {
   state.chatRoundCount = 0;
   state.chatRecentTimestamps = [];
   state.roundRevealShownFor = state.round;
-  state.roundRevealEndsAt = Date.now() + 1600;
+  state.roundRevealEndsAt = 0;
+  state.roundRevealPending = true;
 
   addLog(`Round ${state.round} started. Dealer: ${state.players[state.dealerIndex].name}. ${state.players[state.currentPlayer].name} begins.`);
   renderAll();
@@ -2169,24 +2179,58 @@ function renderHand() {
   if (!p) return;
   const canInteract = !!current && state.currentPlayer === state.viewerIndex && !current.isAI && state.phase === "mainAction";
   const draftCardIds = new Set(state.draftMelds.flatMap((m) => m.cards.map(cardId)));
+  const canLayoffNow = canInteract && !!current?.hasMetRound && state.tableMelds.length > 0;
+  const layoffCandidateIds = new Set();
+  if (canLayoffNow) {
+    for (const card of p.hand) {
+      for (const meld of state.tableMelds) {
+        const check = validateMeldByType(meld.type, [...meld.cards, card]);
+        if (check.ok) {
+          layoffCandidateIds.add(cardId(card));
+          break;
+        }
+      }
+    }
+  }
   const lobby = activeLobby();
   const backStyle = lobby?.cardBackStyle || 1;
-  const revealActive = Date.now() < state.roundRevealEndsAt;
+  const revealPending = !!state.roundRevealPending;
+  const revealActive = !revealPending && Date.now() < state.roundRevealEndsAt;
 
-  if (revealActive) {
+  root.classList.toggle("hand-pending-reveal", revealPending);
+
+  if (revealPending) {
+    const backCards = p.hand.map(() => `<div class="card-back back-style-${backStyle}"></div>`).join("");
+    root.innerHTML = `
+      ${backCards}
+      <div class="hand-reveal-overlay">
+        <button id="flipRevealBtn" class="primary" type="button">Flip</button>
+      </div>
+    `;
+    const btn = el("flipRevealBtn");
+    if (btn) btn.onclick = startRoundRevealAnimation;
+  } else if (revealActive) {
     root.innerHTML = p.hand.map((c, i) => renderFlippingCardModel(c, backStyle, i * 55)).join("");
     setTimeout(() => {
-      if (Date.now() >= state.roundRevealEndsAt) renderHand();
+      if (Date.now() >= state.roundRevealEndsAt) {
+        state.roundRevealEndsAt = 0;
+        renderHand();
+      }
     }, 1750);
   } else {
     for (const c of p.hand) {
       const inDraftMeld = draftCardIds.has(cardId(c));
+      const canLayoffCard = layoffCandidateIds.has(cardId(c));
+      const extraClasses = [
+        inDraftMeld ? "in-draft-meld" : "",
+        canLayoffCard ? "layoff-candidate" : ""
+      ].filter(Boolean).join(" ");
       const cardNode = document.createElement("div");
       cardNode.innerHTML = renderCardModel(c, {
         selectable: true,
         checked: state.selectedCardIds.has(cardId(c)),
         disabled: !canInteract,
-        extraClass: inDraftMeld ? "in-draft-meld" : ""
+        extraClass: extraClasses
       });
       root.appendChild(cardNode.firstElementChild);
     }
@@ -2207,6 +2251,10 @@ function renderHandActions() {
   const p = currentPlayerObj();
   const viewer = viewerPlayerObj();
   const root = el("handActions");
+  if (state.roundRevealPending) {
+    root.innerHTML = "<p class='muted tiny'>Press Flip to reveal your hand for this round.</p>";
+    return;
+  }
   if (state.session.role === "spectator") {
     root.innerHTML = "<p class='muted tiny'>Spectator mode: hand actions disabled.</p>";
     return;
