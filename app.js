@@ -59,6 +59,8 @@ const state = {
   buyingIndex: 0,
   discardBoughtBy: null,
   lastDiscarderIndex: null,
+  turnTakenThisRound: [],
+  pendingRoundWinnerIndex: null,
   gameOver: false,
   aiTimer: null,
   viewerIndex: 0,
@@ -137,8 +139,19 @@ function applyGameStateSnapshot(gameState) {
   state.buyingIndex = gameState.buyingIndex || 0;
   state.discardBoughtBy = gameState.discardBoughtBy ?? null;
   state.lastDiscarderIndex = Number.isInteger(gameState.lastDiscarderIndex) ? gameState.lastDiscarderIndex : null;
-  state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
   state.players = gameState.players || [];
+  if (Array.isArray(gameState.turnTakenThisRound) && gameState.turnTakenThisRound.length === state.players.length) {
+    state.turnTakenThisRound = [...gameState.turnTakenThisRound];
+  } else {
+    state.turnTakenThisRound = state.players.map(() => false);
+    if (Number.isInteger(gameState.currentPlayer) && gameState.currentPlayer >= 0 && gameState.currentPlayer < state.players.length) {
+      state.turnTakenThisRound[gameState.currentPlayer] = true;
+    }
+  }
+  state.pendingRoundWinnerIndex = Number.isInteger(gameState.pendingRoundWinnerIndex)
+    ? gameState.pendingRoundWinnerIndex
+    : null;
+  state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
 
   const lobby = activeLobby();
   if (state.session.role === "spectator") {
@@ -434,8 +447,55 @@ function serializeCurrentGameState() {
     buyingIndex: state.buyingIndex,
     discardBoughtBy: state.discardBoughtBy,
     lastDiscarderIndex: state.lastDiscarderIndex,
+    turnTakenThisRound: state.turnTakenThisRound,
+    pendingRoundWinnerIndex: state.pendingRoundWinnerIndex,
     players: state.players
   };
+}
+
+function markTurnTaken(idx) {
+  if (!Array.isArray(state.turnTakenThisRound) || state.turnTakenThisRound.length !== state.players.length) {
+    state.turnTakenThisRound = state.players.map(() => false);
+  }
+  if (Number.isInteger(idx) && idx >= 0 && idx < state.turnTakenThisRound.length) {
+    state.turnTakenThisRound[idx] = true;
+  }
+}
+
+function allPlayersHaveTakenTurnThisRound() {
+  if (!Array.isArray(state.turnTakenThisRound) || state.turnTakenThisRound.length !== state.players.length) {
+    return false;
+  }
+  return state.turnTakenThisRound.every(Boolean);
+}
+
+function beginTurnForPlayer(idx) {
+  state.currentPlayer = idx;
+  state.phase = "offerDiscard";
+  state.discardBoughtBy = null;
+  state.buyingOrder = [];
+  state.buyingIndex = 0;
+  state.turnDiscardDecisionMade = false;
+  markTurnTaken(idx);
+}
+
+function handlePlayerWentOut(winnerIndex) {
+  if (!Number.isInteger(state.pendingRoundWinnerIndex)) {
+    state.pendingRoundWinnerIndex = winnerIndex;
+  }
+
+  if (allPlayersHaveTakenTurnThisRound()) {
+    roundEnd(state.pendingRoundWinnerIndex);
+    return true;
+  }
+
+  const next = nextIndex(state.currentPlayer);
+  beginTurnForPlayer(next);
+  addLog(`${state.players[winnerIndex].name} is out of cards. Round will end after everyone has had one turn this round.`);
+  addLog(`Turn passes to ${currentPlayerObj().name}.`);
+  renderAll();
+  syncGameStateToServer();
+  return false;
 }
 
 function syncGameStateToServer() {
@@ -943,6 +1003,18 @@ function promptRunWildPlacement() {
   });
 }
 
+function openHelpModal() {
+  const modal = el("helpModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+}
+
+function closeHelpModal() {
+  const modal = el("helpModal");
+  if (!modal) return;
+  modal.style.display = "none";
+}
+
 function renderLastRoundSummaryButton() {
   const btn = el("viewLastRoundSummary");
   if (!btn) return;
@@ -960,6 +1032,7 @@ function roundEnd(winnerIndex) {
   clearAiTimer();
   const lobby = activeLobby();
   const winner = state.players[winnerIndex];
+  state.pendingRoundWinnerIndex = null;
   state.roundSummary = buildRoundSummary(winnerIndex);
   state.showRoundSummary = true;
   addLog(`${winner.name} ended Round ${state.round}. Scoring remaining hands...`);
@@ -1022,13 +1095,10 @@ function startRound() {
   }
 
   state.discardPile.push(state.drawPile.pop());
-  state.currentPlayer = nextIndex(state.dealerIndex);
-  state.phase = "offerDiscard";
-  state.discardBoughtBy = null;
+  state.turnTakenThisRound = state.players.map(() => false);
+  state.pendingRoundWinnerIndex = null;
+  beginTurnForPlayer(nextIndex(state.dealerIndex));
   state.lastDiscarderIndex = null;
-  state.buyingOrder = [];
-  state.buyingIndex = 0;
-  state.turnDiscardDecisionMade = false;
   state.chatRoundCount = 0;
   state.chatRecentTimestamps = [];
 
@@ -1145,22 +1215,46 @@ function renderLeaderboard() {
   const winsRows = state.leaderboard.totalWins || [];
   const lowScoreRows = state.leaderboard.lowestWinningScores || [];
   wrap.className = "leaderboard-list";
-  const lowScoresHtml = lowScoreRows.length
-    ? lowScoreRows.map((entry, idx) => `
-      <div class="leaderboard-item">
-        <span>${idx === 0 ? "<span class='trophy-icon' title='Top Rank'>🏆</span> " : ""}${idx + 1}. ${entry.name}</span>
-        <strong>${entry.score} point(s)</strong>
-      </div>
-    `).join("")
-    : "<p class='tiny muted'>No completed games yet.</p>";
-  const winsHtml = winsRows.length
-    ? winsRows.map((entry, idx) => `
-      <div class="leaderboard-item">
-        <span>${idx === 0 ? "<span class='trophy-icon' title='Top Rank'>🏆</span> " : ""}${idx + 1}. ${entry.name}</span>
-        <strong>${entry.wins} win(s)</strong>
-      </div>
-    `).join("")
-    : "<p class='tiny muted'>No wins recorded yet.</p>";
+  const lowScoresHtml = lowScoreRows.length ? `
+    <table class="leaderboard-table">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Player</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${lowScoreRows.map((entry, idx) => `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${idx === 0 ? "<span class='trophy-icon' title='Top Rank'>🏆</span> " : ""}${entry.name}</td>
+            <td>${entry.score}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : "<p class='tiny muted'>No completed games yet.</p>";
+  const winsHtml = winsRows.length ? `
+    <table class="leaderboard-table">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Player</th>
+          <th>Wins</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${winsRows.map((entry, idx) => `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${idx === 0 ? "<span class='trophy-icon' title='Top Rank'>🏆</span> " : ""}${entry.name}</td>
+            <td>${entry.wins}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : "<p class='tiny muted'>No wins recorded yet.</p>";
 
   wrap.innerHTML = `
     <div class="card">
@@ -1569,7 +1663,7 @@ function aiMainAction(player) {
           addLog(`${player.name} laid off ${cardLabel(c)} to Meld #${bestMeld.id}.`);
           changed = true;
           if (player.hand.length === 0) {
-            roundEnd(state.currentPlayer);
+            handlePlayerWentOut(state.currentPlayer);
             return;
           }
           break;
@@ -1752,7 +1846,7 @@ function submitRoundMelds() {
   addLog(`${p.name} successfully met Round ${state.round} requirements.`);
 
   if (p.hand.length === 0) {
-    roundEnd(state.currentPlayer);
+    handlePlayerWentOut(state.currentPlayer);
     return;
   }
 
@@ -1809,7 +1903,7 @@ async function layOffToMeld() {
   addLog(`${p.name} laid off ${cards.map(cardLabel).join(", ")} to Meld #${meld.id}.`);
 
   if (p.hand.length === 0) {
-    roundEnd(state.currentPlayer);
+    handlePlayerWentOut(state.currentPlayer);
     return;
   }
 
@@ -1836,16 +1930,17 @@ function discardSelected() {
   addLog(`${p.name} discarded ${cardLabel(c)}.`);
 
   if (p.hand.length === 0) {
-    roundEnd(state.currentPlayer);
+    handlePlayerWentOut(state.currentPlayer);
+    return;
+  }
+
+  if (Number.isInteger(state.pendingRoundWinnerIndex) && allPlayersHaveTakenTurnThisRound()) {
+    roundEnd(state.pendingRoundWinnerIndex);
     return;
   }
 
   state.currentPlayer = nextIndex(state.currentPlayer);
-  state.phase = "offerDiscard";
-  state.discardBoughtBy = null;
-  state.buyingOrder = [];
-  state.buyingIndex = 0;
-  state.turnDiscardDecisionMade = false;
+  beginTurnForPlayer(state.currentPlayer);
   addLog(`Turn passes to ${currentPlayerObj().name}.`);
   renderAll();
   syncGameStateToServer();
@@ -2245,6 +2340,8 @@ el("backToLobbies").addEventListener("click", showHome);
 el("returnToLobbies").addEventListener("click", showHome);
 el("rejoinLobby").addEventListener("click", rejoinLastLobby);
 el("themeToggle").addEventListener("click", toggleTheme);
+el("helpButton").addEventListener("click", openHelpModal);
+el("closeHelpModal").addEventListener("click", closeHelpModal);
 el("sortRank").addEventListener("click", () => sortHand("rank"));
 el("sortSuit").addEventListener("click", () => sortHand("suit"));
 el("sendChat").addEventListener("click", handleSendChat);

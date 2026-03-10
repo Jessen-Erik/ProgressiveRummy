@@ -8,6 +8,7 @@ import { Server } from "socket.io";
 
 import { EVENTS, GAME_ACTIONS } from "../shared/events.js";
 import { LobbyStore } from "./state/store.js";
+import { ResultsDb } from "./state/results-db.js";
 import { buildInitialGameState, scrubSnapshotForViewer } from "./state/rules.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,7 +32,8 @@ const io = new Server(server, {
   cors: { origin: CLIENT_ORIGIN === "*" ? true : CLIENT_ORIGIN }
 });
 
-const store = new LobbyStore();
+const resultsDb = new ResultsDb(path.join(rootDir, "server", "data", "progressive-rummy.sqlite"));
+const store = new LobbyStore({ resultsDb });
 
 function emitLobbyList() {
   io.emit(EVENTS.LOBBY_LIST_UPDATE, store.listLobbySummaries());

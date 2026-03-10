@@ -11,7 +11,10 @@
     <div class="card">
       <div class="row title-row">
         <h1>Progressive Rummy</h1>
-        <button id="themeToggle" class="secondary" type="button">Dark Theme</button>
+        <div class="row title-actions">
+          <button id="helpButton" type="button">Help</button>
+          <button id="themeToggle" class="secondary" type="button">Dark Theme</button>
+        </div>
       </div>
       <div id="homeArea">
         <h2>Create Lobby</h2>
@@ -128,6 +131,28 @@
         <div class="row" style="justify-content:flex-end; margin-top:10px;">
           <button id="chooseWildBottom" class="secondary" type="button">Bottom</button>
           <button id="chooseWildTop" class="ok" type="button">Top</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="helpModal" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="row" style="justify-content: space-between;">
+          <h2>How To Play Progressive Rummy</h2>
+          <button id="closeHelpModal" class="secondary" type="button">Close</button>
+        </div>
+        <div class="round-summary-player">
+          <p class="summary-line"><strong>Goal:</strong> Finish 7 rounds with the lowest total score.</p>
+          <p class="summary-line"><strong>Players/Decks:</strong> 2-5 players use 2 decks, 6-7 players use 3 decks.</p>
+          <p class="summary-line"><strong>Deal:</strong> Rounds 1-4 deal 10 cards, rounds 5-7 deal 12 cards.</p>
+          <p class="summary-line"><strong>Turn Flow:</strong> 1) Current player may take discard. 2) If declined, eligible opponents may buy discard + penalty card. 3) Current player draws. 4) Play melds/layoffs. 5) Discard to end turn.</p>
+          <p class="summary-line"><strong>Sets:</strong> 3+ same rank (wild 2s allowed).</p>
+          <p class="summary-line"><strong>Runs:</strong> 4+ consecutive same suit (A can be low or high). Wild 2s can fill missing cards.</p>
+          <p class="summary-line"><strong>Wild Limits:</strong> Wilds cannot outnumber non-wilds in a meld. A set cannot be only wilds.</p>
+          <p class="summary-line"><strong>Round Requirements:</strong></p>
+          <p class="summary-line">R1: 2 sets | R2: 1 set + 1 run | R3: 2 runs | R4: 3 sets</p>
+          <p class="summary-line">R5: 2 sets + 1 run | R6: 1 set + 2 runs | R7: 3 runs (and hand must be empty when submitted)</p>
+          <p class="summary-line"><strong>Scoring:</strong> Cards left in hand when a round ends are points against you: 2=20, A=15, K/Q/J=10, others face value.</p>
         </div>
       </div>
     </div>
