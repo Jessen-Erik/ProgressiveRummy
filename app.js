@@ -907,13 +907,13 @@ function buildPlayerInputs() {
   if (!lobby || !wrap) return;
 
   const requested = Number(el("setupPlayerCount").value);
-  if (!Number.isNaN(requested) && requested >= 2 && requested <= 7 && state.session.role === "owner") {
+  if (!Number.isNaN(requested) && requested >= 2 && requested <= 7 && (state.session.role === "owner" || state.session.role === "player")) {
     adjustLobbySlotCount(lobby, requested);
   } else {
     el("setupPlayerCount").value = String(lobby.maxPlayers);
   }
 
-  const canEdit = state.session.role === "owner";
+  const canEdit = state.session.role === "owner" || state.session.role === "player";
   wrap.innerHTML = "";
   for (let i = 0; i < lobby.maxPlayers; i++) {
     const slot = lobby.slots[i];
@@ -958,7 +958,7 @@ function buildPlayerInputs() {
 
 function saveLobbySetupFromInputs() {
   const lobby = activeLobby();
-  if (!lobby || state.session.role !== "owner") return;
+  if (!lobby || (state.session.role !== "owner" && state.session.role !== "player")) return;
   for (let i = 0; i < lobby.maxPlayers; i++) {
     const slot = lobby.slots[i];
     const raw = (el(`p${i + 1}`)?.value || "").trim();
@@ -1015,10 +1015,10 @@ function enterSetupLobby() {
   if (!lobby) return;
   el("setupLobbyTitle").textContent = `Lobby Setup: ${lobby.name}`;
   el("setupPlayerCount").value = String(lobby.maxPlayers);
-  const ownerMode = state.session.role === "owner";
-  el("setupPlayerCount").disabled = !ownerMode;
-  el("buildPlayers").disabled = !ownerMode;
-  el("startGame").disabled = !ownerMode;
+  const canEditSetup = state.session.role === "owner" || state.session.role === "player";
+  el("setupPlayerCount").disabled = !canEditSetup;
+  el("buildPlayers").disabled = !canEditSetup;
+  el("startGame").disabled = state.session.role !== "owner";
   showSetup();
   buildPlayerInputs();
 }
@@ -1850,14 +1850,14 @@ el("lobbyList").addEventListener("click", handleLobbyListClick);
 el("buildPlayers").addEventListener("click", () => {
   buildPlayerInputs();
   const lobby = activeLobby();
-  if (state.socket && lobby && state.session.role === "owner" && lobby.phase === "setup") {
+  if (state.socket && lobby && (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup") {
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
   }
 });
 el("setupPlayerCount").addEventListener("change", () => {
   buildPlayerInputs();
   const lobby = activeLobby();
-  if (state.socket && lobby && state.session.role === "owner" && lobby.phase === "setup") {
+  if (state.socket && lobby && (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup") {
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
   }
 });

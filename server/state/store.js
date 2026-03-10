@@ -213,7 +213,10 @@ export class LobbyStore {
     if (lobby.phase !== "setup") return { ok: false, reason: "Cannot edit setup after game start." };
 
     const session = this.getSession(socketId);
-    if (!session || session.id !== lobby.ownerSessionId) return { ok: false, reason: "Only owner can edit setup." };
+    if (!session) return { ok: false, reason: "Session not found." };
+    const isOwner = session.id === lobby.ownerSessionId;
+    const isSeatedPlayer = session.role === "player" && session.lobbyId === lobby.id && session.seatIndex >= 0;
+    if (!isOwner && !isSeatedPlayer) return { ok: false, reason: "Only owner or joined players can edit setup." };
 
     const targetSize = clampPlayers(maxPlayers);
 
