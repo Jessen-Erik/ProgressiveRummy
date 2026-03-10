@@ -18,6 +18,7 @@ export class LobbyStore {
   constructor() {
     this.lobbies = new Map();
     this.socketToSession = new Map();
+    this.userWins = new Map();
   }
 
   upsertSession(socketId, name) {
@@ -81,6 +82,7 @@ export class LobbyStore {
       slots,
       seatToPlayer: {},
       spectators: [],
+      hasRecordedWin: false,
       gameState: null,
       chat: {
         byRoundCount: 0,
@@ -111,6 +113,10 @@ export class LobbyStore {
           .filter(({ s }) => s.type === "human" && !s.occupied)
           .map(({ idx }) => idx)
         : [];
+      const aiSeatIndices = lobby.slots
+        .map((s, idx) => ({ s, idx }))
+        .filter(({ s }) => s.type === "ai")
+        .map(({ idx }) => idx);
       return {
         id: lobby.id,
         name: lobby.name,
@@ -120,9 +126,48 @@ export class LobbyStore {
         playersJoined: names.length,
         playerNames: names,
         spectators: [...lobby.spectators],
-        setupOpenSeats
+        setupOpenSeats,
+        aiSeatIndices
       };
     });
+  }
+
+  takeoverAiSeat({ socketId, lobbyId, seatIndex, playerName }) {
+    const lobby = this.getLobby(lobbyId);
+    if (!lobby) return { ok: false, reason: "Lobby not found." };
+    if (lobby.phase !== "setup" && lobby.phase !== "in_progress") {
+      return { ok: false, reason: "Lobby is not joinable." };
+    }
+
+    const session = this.upsertSession(socketId, playerName);
+    if (session.role !== "spectator") {
+      return { ok: false, reason: "Only spectators can take over an AI seat." };
+    }
+
+    const idx = Number(seatIndex);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= lobby.maxPlayers) return { ok: false, reason: "Invalid seat." };
+    const slot = lobby.slots[idx];
+    if (!slot || slot.type !== "ai") return { ok: false, reason: "Selected seat is not AI." };
+
+    slot.type = "human";
+    slot.occupied = true;
+    slot.occupantSessionId = session.id;
+    slot.name = session.name;
+
+    session.role = "player";
+    session.lobbyId = lobby.id;
+    session.seatIndex = idx;
+    lobby.spectators = lobby.spectators.filter((n) => n !== session.name);
+
+    if (lobby.phase === "in_progress" && lobby.gameState) {
+      const playerIndex = lobby.seatToPlayer ? lobby.seatToPlayer[idx] : undefined;
+      if (playerIndex !== undefined && lobby.gameState.players?.[playerIndex]) {
+        lobby.gameState.players[playerIndex].isAI = false;
+        lobby.gameState.players[playerIndex].name = session.name;
+      }
+    }
+
+    return { ok: true, lobby, session };
   }
 
   joinSeat({ socketId, lobbyId, seatIndex, playerName }) {
@@ -232,6 +277,7 @@ export class LobbyStore {
 
     lobby.phase = "in_progress";
     lobby.round = 1;
+    lobby.hasRecordedWin = false;
     lobby.seatToPlayer = seatToPlayer;
     lobby.chat.byRoundCount = 0;
     lobby.chat.messages = [];
@@ -239,6 +285,31 @@ export class LobbyStore {
 
     lobby.gameState = buildInitialGameState(activePlayers);
     return { ok: true, lobby };
+  }
+
+  recordLobbyWinnerIfNeeded(lobby) {
+    if (!lobby || lobby.hasRecordedWin) return null;
+    const game = lobby.gameState;
+    if (!game || game.phase !== "gameOver" || !Array.isArray(game.players) || game.players.length === 0) {
+      return null;
+    }
+
+    const sorted = [...game.players].sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+    const winnerName = normalizeName(sorted[0]?.name, "");
+    if (!winnerName) return null;
+
+    const prev = this.userWins.get(winnerName) || 0;
+    this.userWins.set(winnerName, prev + 1);
+    lobby.hasRecordedWin = true;
+    lobby.phase = "completed";
+    return winnerName;
+  }
+
+  leaderboardTop(limit = 10) {
+    return [...this.userWins.entries()]
+      .map(([name, wins]) => ({ name, wins }))
+      .sort((a, b) => (b.wins - a.wins) || a.name.localeCompare(b.name))
+      .slice(0, limit);
   }
 
   addChat({ socketId, lobbyId, text, now = Date.now() }) {

@@ -495,3 +495,18 @@ input[type="text"], input[type="number"], select {
   color: #5f6974;
   margin: 4px 0;
 }
+
+.leaderboard-list {
+  display: grid;
+  gap: 6px;
+}
+
+.leaderboard-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff8ed;
+  padding: 6px 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.92rem;
+}

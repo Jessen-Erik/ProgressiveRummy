@@ -8,6 +8,7 @@ export const EVENTS = {
   LOBBY_OPEN_SETUP: "lobby:open-setup",
   LOBBY_JOIN_SEAT: "lobby:join-seat",
   LOBBY_SPECTATE: "lobby:spectate",
+  LOBBY_TAKEOVER_AI: "lobby:takeover-ai",
   LOBBY_UPDATE_SETUP: "lobby:update-setup",
   LOBBY_SNAPSHOT: "lobby:snapshot",
 
@@ -17,6 +18,7 @@ export const EVENTS = {
 
   CHAT_SEND: "chat:send",
   CHAT_UPDATE: "chat:update",
+  LEADERBOARD_UPDATE: "leaderboard:update",
 
   ERROR: "error:server"
 };

@@ -21,6 +21,7 @@ const EVENTS = {
   LOBBY_OPEN_SETUP: "lobby:open-setup",
   LOBBY_JOIN_SEAT: "lobby:join-seat",
   LOBBY_SPECTATE: "lobby:spectate",
+  LOBBY_TAKEOVER_AI: "lobby:takeover-ai",
   LOBBY_UPDATE_SETUP: "lobby:update-setup",
   LOBBY_SNAPSHOT: "lobby:snapshot",
   GAME_START: "game:start",
@@ -28,6 +29,7 @@ const EVENTS = {
   GAME_SNAPSHOT: "game:snapshot",
   CHAT_SEND: "chat:send",
   CHAT_UPDATE: "chat:update",
+  LEADERBOARD_UPDATE: "leaderboard:update",
   ERROR: "error:server"
 };
 
@@ -65,7 +67,8 @@ const state = {
   chatRoundCount: 0,
   socket: null,
   sessionId: null,
-  isApplyingServerState: false
+  isApplyingServerState: false,
+  leaderboard: []
 };
 state.selectedCardBackStyle = 1;
 
@@ -145,6 +148,11 @@ function connectSocketIfAvailable() {
   socket.on(EVENTS.LOBBY_LIST_UPDATE, (list) => {
     state.lobbies = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
     renderLobbyList();
+  });
+
+  socket.on(EVENTS.LEADERBOARD_UPDATE, (rows) => {
+    state.leaderboard = Array.isArray(rows) ? rows.map((r) => ({ name: r.name, wins: r.wins })) : [];
+    renderLeaderboard();
   });
 
   socket.on(EVENTS.LOBBY_SNAPSHOT, (snapshot) => {
@@ -745,6 +753,7 @@ function showHome() {
   el("scoreBar").style.display = "none";
   el("gameArea").style.display = "none";
   renderLobbyList();
+  renderLeaderboard();
   emitSocket(EVENTS.LOBBY_LIST);
 }
 
@@ -797,6 +806,14 @@ function renderLobbyList() {
     const setupJoinButtons = lobby.phase === "setup"
       ? emptyHumanSlots.map(({ idx }) => `<button data-action="join-seat" data-lobby="${lobby.id}" data-seat="${idx}">Join Seat ${idx + 1}</button>`).join("")
       : "";
+    const aiSeatIndices = Array.isArray(lobby.aiSeatIndices)
+      ? lobby.aiSeatIndices
+      : (Array.isArray(lobby.slots)
+        ? lobby.slots.map((s, idx) => ({ s, idx })).filter(({ s }) => s.type === "ai").map(({ idx }) => idx)
+        : []);
+    const takeoverButtons = (lobby.phase === "setup" || lobby.phase === "in_progress")
+      ? aiSeatIndices.map((idx) => `<button data-action="takeover-ai" data-lobby="${lobby.id}" data-seat="${idx}">Take AI Seat ${idx + 1}</button>`).join("")
+      : "";
 
     const spectatorButton = lobby.phase === "setup" || lobby.phase === "in_progress"
       ? `<button data-action="spectate" data-lobby="${lobby.id}">Spectate</button>`
@@ -815,11 +832,28 @@ function renderLobbyList() {
         <div class="row">
           ${ownerOpenButton}
           ${setupJoinButtons}
+          ${takeoverButtons}
           ${spectatorButton}
         </div>
       </div>
     `;
   }).join("");
+}
+
+function renderLeaderboard() {
+  const wrap = el("leaderboardList");
+  if (!wrap) return;
+  if (!state.leaderboard.length) {
+    wrap.innerHTML = "<p class='tiny muted'>No wins recorded yet.</p>";
+    return;
+  }
+  wrap.className = "leaderboard-list";
+  wrap.innerHTML = state.leaderboard.map((entry, idx) => `
+    <div class="leaderboard-item">
+      <span>${idx + 1}. ${entry.name}</span>
+      <strong>${entry.wins} win(s)</strong>
+    </div>
+  `).join("");
 }
 
 function adjustLobbySlotCount(lobby, count) {
@@ -933,36 +967,14 @@ function createLobby() {
     alert("Player count must be from 2 to 7.");
     return;
   }
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server. Start the Node server and refresh.");
+    return;
+  }
   state.session.name = ownerName;
   state.session.role = "owner";
   state.session.seatIndex = 0;
-  if (emitSocket(EVENTS.LOBBY_CREATE, { ownerName, lobbyName, maxPlayers: count, cardBackStyle: state.selectedCardBackStyle })) {
-    return;
-  }
-
-  const slots = [];
-  for (let i = 0; i < count; i++) {
-    if (i === 0) slots.push({ name: ownerName, type: "human", occupied: true, isOwner: true });
-    else slots.push({ name: "", type: "human", occupied: false, isOwner: false });
-  }
-
-  const lobby = {
-    id: state.nextLobbyId++,
-    name: lobbyName,
-    ownerName,
-    cardBackStyle: state.selectedCardBackStyle,
-    maxPlayers: count,
-    phase: "setup",
-    round: 1,
-    slots,
-    seatToPlayer: {},
-    spectators: []
-  };
-
-  state.lobbies.unshift(lobby);
-  state.activeLobbyId = lobby.id;
-  state.session = { name: ownerName, role: "owner", seatIndex: 0 };
-  enterSetupLobby();
+  emitSocket(EVENTS.LOBBY_CREATE, { ownerName, lobbyName, maxPlayers: count, cardBackStyle: state.selectedCardBackStyle });
 }
 
 function enterSetupLobby() {
@@ -986,49 +998,38 @@ function joinLobbySeat(lobbyId, seatIndex) {
 
   const name = (prompt("Enter player name for this seat:", `Player ${seatIndex + 1}`) || "").trim();
   if (!name) return;
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server.");
+    return;
+  }
   state.session.name = name;
   state.session.role = "player";
   state.session.seatIndex = seatIndex;
-  if (emitSocket(EVENTS.LOBBY_JOIN_SEAT, { lobbyId, seatIndex, playerName: name })) return;
-
-  slot.occupied = true;
-  slot.name = name;
-  state.activeLobbyId = lobbyId;
-  state.session = { name, role: "player", seatIndex };
-  enterSetupLobby();
+  emitSocket(EVENTS.LOBBY_JOIN_SEAT, { lobbyId, seatIndex, playerName: name });
 }
 
 function spectateLobby(lobbyId) {
   const lobby = state.lobbies.find((l) => l.id === lobbyId);
   if (!lobby) return;
   const name = (prompt("Enter spectator name:", "Spectator") || "Spectator").trim() || "Spectator";
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server.");
+    return;
+  }
   state.session.name = name;
   state.session.role = "spectator";
   state.session.seatIndex = -1;
-  if (emitSocket(EVENTS.LOBBY_SPECTATE, { lobbyId, spectatorName: name })) return;
-  if (!lobby.spectators) lobby.spectators = [];
-  if (!lobby.spectators.includes(name)) lobby.spectators.push(name);
-  state.activeLobbyId = lobbyId;
-  state.session = { name, role: "spectator", seatIndex: -1 };
-  if (lobby.phase === "setup") {
-    enterSetupLobby();
-  } else if (lobby.phase === "in_progress") {
-    showGame();
-    renderAll();
-  }
+  emitSocket(EVENTS.LOBBY_SPECTATE, { lobbyId, spectatorName: name });
 }
 
 function openSetupLobby(lobbyId) {
   const lobby = state.lobbies.find((l) => l.id === lobbyId);
   if (!lobby || lobby.phase !== "setup") return;
-  if (emitSocket(EVENTS.LOBBY_OPEN_SETUP, { lobbyId })) return;
-  state.activeLobbyId = lobbyId;
-  if (state.session.name === lobby.ownerName) {
-    state.session = { name: lobby.ownerName, role: "owner", seatIndex: 0 };
-  } else {
-    state.session = { name: state.session.name || "Spectator", role: "spectator", seatIndex: -1 };
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server.");
+    return;
   }
-  enterSetupLobby();
+  emitSocket(EVENTS.LOBBY_OPEN_SETUP, { lobbyId });
 }
 
 function handleLobbyListClick(e) {
@@ -1042,10 +1043,34 @@ function handleLobbyListClick(e) {
     joinLobbySeat(lobbyId, seat);
   } else if (action === "spectate") {
     spectateLobby(lobbyId);
+  } else if (action === "takeover-ai") {
+    const seat = Number(btn.getAttribute("data-seat"));
+    takeoverAiSeat(lobbyId, seat);
   } else if (action === "open-setup") {
     openSetupLobby(lobbyId);
   }
   renderLobbyList();
+}
+
+function takeoverAiSeat(lobbyId, seatIndex) {
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server.");
+    return;
+  }
+
+  let name = state.session.name;
+  if (!name) {
+    name = (prompt("Enter spectator name to take over AI seat:", "Player") || "").trim();
+    if (!name) return;
+  }
+
+  // Ensure spectator intent, then request takeover.
+  if (state.session.role !== "spectator") {
+    state.session.role = "spectator";
+    state.session.seatIndex = -1;
+  }
+  state.session.name = name;
+  emitSocket(EVENTS.LOBBY_TAKEOVER_AI, { lobbyId, seatIndex, playerName: name });
 }
 
 function startGame() {
@@ -1056,74 +1081,13 @@ function startGame() {
     alert("Only the lobby owner can start the game.");
     return;
   }
-  if (state.socket) {
+  if (state.socket && state.socket.connected) {
     const setupPayload = collectSetupPayloadFromInputs();
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...setupPayload });
     emitSocket(EVENTS.GAME_START, { lobbyId: lobby.id });
     return;
   }
-
-  saveLobbySetupFromInputs();
-  const players = [];
-  lobby.seatToPlayer = {};
-  for (let i = 0; i < lobby.maxPlayers; i++) {
-    const slot = lobby.slots[i];
-    if (slot.type === "ai") {
-      lobby.seatToPlayer[i] = players.length;
-      players.push({
-        name: slot.name || `AI ${i + 1}`,
-        score: 0,
-        hand: [],
-        hasMetRound: false,
-        melds: [],
-        isAI: true
-      });
-      continue;
-    }
-    if (slot.occupied && slot.name.trim()) {
-      lobby.seatToPlayer[i] = players.length;
-      players.push({
-        name: slot.name.trim(),
-        score: 0,
-        hand: [],
-        hasMetRound: false,
-        melds: [],
-        isAI: false
-      });
-    }
-  }
-
-  if (players.length < 2 || players.length > 7) {
-    alert("Game requires 2 to 7 active players (occupied humans + AI).");
-    return;
-  }
-
-  state.players = players;
-  state.round = 1;
-  state.dealerIndex = Math.floor(Math.random() * players.length);
-  if (state.session.role === "spectator") {
-    state.viewerIndex = -1;
-  } else {
-    const mapped = lobby.seatToPlayer[state.session.seatIndex];
-    state.viewerIndex = mapped === undefined ? -1 : mapped;
-  }
-  if (state.viewerIndex < 0) {
-    state.viewerIndex = Math.max(0, players.findIndex((p) => !p.isAI));
-  }
-  state.gameOver = false;
-  state.phase = "setup";
-  state.log = [];
-  state.chatMessages = [];
-  state.chatRecentTimestamps = [];
-  state.chatRoundCount = 0;
-  lobby.phase = "in_progress";
-  lobby.round = 1;
-
-  el("gameOverArea").style.display = "none";
-  showGame();
-
-  addLog(`Game started in ${lobby.name} with ${players.length} players. Dealer chosen at random: ${players[state.dealerIndex].name}.`);
-  startRound();
+  alert("Not connected to multiplayer server.");
 }
 
 function clearAiTimer() {

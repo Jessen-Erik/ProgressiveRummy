@@ -37,6 +37,10 @@ function emitLobbyList() {
   io.emit(EVENTS.LOBBY_LIST_UPDATE, store.listLobbySummaries());
 }
 
+function emitLeaderboard() {
+  io.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardTop(10));
+}
+
 function emitLobbySnapshot(lobbyId) {
   const lobby = store.getLobby(lobbyId);
   if (!lobby) return;
@@ -59,6 +63,7 @@ function fail(socket, message) {
 
 io.on("connection", (socket) => {
   socket.emit(EVENTS.LOBBY_LIST_UPDATE, store.listLobbySummaries());
+  socket.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardTop(10));
 
   socket.on(EVENTS.SESSION_HELLO, (payload = {}) => {
     const session = store.upsertSession(socket.id, payload.name || "Player");
@@ -112,6 +117,20 @@ io.on("connection", (socket) => {
       socketId: socket.id,
       lobbyId: payload.lobbyId,
       spectatorName: payload.spectatorName
+    });
+    if (!result.ok) return fail(socket, result.reason);
+
+    socket.join(result.lobby.id);
+    emitLobbyList();
+    emitLobbySnapshot(result.lobby.id);
+  });
+
+  socket.on(EVENTS.LOBBY_TAKEOVER_AI, (payload = {}) => {
+    const result = store.takeoverAiSeat({
+      socketId: socket.id,
+      lobbyId: payload.lobbyId,
+      seatIndex: payload.seatIndex,
+      playerName: payload.playerName
     });
     if (!result.ok) return fail(socket, result.reason);
 
@@ -179,11 +198,13 @@ io.on("connection", (socket) => {
       } else if (Number.isInteger(payload.gameState.round)) {
         lobby.round = payload.gameState.round;
       }
+      const winner = store.recordLobbyWinnerIfNeeded(lobby);
       if (lobby.round !== previousRound) {
         lobby.chat.byRoundCount = 0;
         lobby.chat.bySessionTimestamps = new Map();
       }
       emitLobbyList();
+      if (winner) emitLeaderboard();
       emitLobbySnapshot(lobby.id);
       return;
     }
@@ -197,11 +218,65 @@ io.on("connection", (socket) => {
     const lobby = store.getLobby(session.lobbyId);
     if (!lobby) return;
 
-    for (const slot of lobby.slots) {
-      if (slot.occupantSessionId === session.id && !slot.isOwner) {
+    let ownerSlotIndex = -1;
+    for (let i = 0; i < lobby.slots.length; i++) {
+      const slot = lobby.slots[i];
+      if (slot.occupantSessionId !== session.id) continue;
+
+      if (slot.isOwner) ownerSlotIndex = i;
+
+      if (lobby.phase === "in_progress") {
+        // Human leaves an active game: AI immediately takes over this seat.
+        const aiNameBase = slot.name || session.name || `Player ${i + 1}`;
+        const aiName = aiNameBase.endsWith(" (AI)") ? aiNameBase : `${aiNameBase} (AI)`;
+        slot.type = "ai";
+        slot.occupied = true;
+        slot.name = aiName;
+        slot.occupantSessionId = null;
+
+        const playerIndex = lobby.seatToPlayer ? lobby.seatToPlayer[i] : undefined;
+        const gamePlayer = playerIndex !== undefined ? lobby.gameState?.players?.[playerIndex] : null;
+        if (gamePlayer) {
+          gamePlayer.isAI = true;
+          gamePlayer.name = aiName;
+        }
+      } else if (!slot.isOwner) {
+        // Setup phase: non-owner seat becomes open again.
         slot.occupied = false;
         slot.name = "";
         slot.occupantSessionId = null;
+      }
+    }
+
+    // Transfer owner role when owner disconnects and a connected human remains.
+    if (session.id === lobby.ownerSessionId) {
+      let newOwnerSlotIndex = -1;
+      for (let i = 0; i < lobby.slots.length; i++) {
+        const slot = lobby.slots[i];
+        if (slot.type === "human" && slot.occupied && slot.occupantSessionId) {
+          newOwnerSlotIndex = i;
+          break;
+        }
+      }
+
+      if (ownerSlotIndex >= 0 && lobby.slots[ownerSlotIndex]) {
+        lobby.slots[ownerSlotIndex].isOwner = false;
+      }
+
+      if (newOwnerSlotIndex >= 0) {
+        const newOwnerSlot = lobby.slots[newOwnerSlotIndex];
+        newOwnerSlot.isOwner = true;
+        lobby.ownerSessionId = newOwnerSlot.occupantSessionId;
+        lobby.ownerName = newOwnerSlot.name;
+
+        for (const s of store.socketToSession.values()) {
+          if (s.id === lobby.ownerSessionId) {
+            s.role = "owner";
+            break;
+          }
+        }
+      } else {
+        lobby.ownerSessionId = null;
       }
     }
 
