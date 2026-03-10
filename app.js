@@ -1037,6 +1037,10 @@ function joinLobbySeat(lobbyId, seatIndex) {
   state.session.role = "player";
   state.session.seatIndex = seatIndex;
   emitSocket(EVENTS.LOBBY_JOIN_SEAT, { lobbyId, seatIndex, playerName: name });
+  // Explicitly request/setup-open so Join Seat always navigates into lobby setup view.
+  state.activeLobbyId = lobbyId;
+  emitSocket(EVENTS.LOBBY_OPEN_SETUP, { lobbyId });
+  enterSetupLobby();
 }
 
 function spectateLobby(lobbyId) {
