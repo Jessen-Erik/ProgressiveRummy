@@ -141,6 +141,7 @@ export class LobbyStore {
       return {
         id: lobby.id,
         name: lobby.name,
+        ownerSessionId: lobby.ownerSessionId,
         phase: lobby.phase,
         round: lobby.round,
         maxPlayers: lobby.maxPlayers,

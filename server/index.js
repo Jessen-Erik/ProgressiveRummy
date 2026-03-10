@@ -98,6 +98,18 @@ io.on("connection", (socket) => {
     emitLobbySnapshot(lobby.id);
   });
 
+  socket.on(EVENTS.LOBBY_DELETE, (payload = {}) => {
+    const lobby = store.getLobby(payload.lobbyId);
+    if (!lobby) return fail(socket, "Lobby not found.");
+    const session = store.getSession(socket.id);
+    if (!session) return fail(socket, "Session not found.");
+    if (session.id !== lobby.ownerSessionId) return fail(socket, "Only the lobby owner can delete this lobby.");
+
+    io.to(lobby.id).emit(EVENTS.ERROR, { message: "Lobby deleted by owner." });
+    store.closeLobby(lobby.id);
+    emitLobbyList();
+  });
+
   socket.on(EVENTS.LOBBY_OPEN_SETUP, (payload = {}) => {
     const lobby = store.getLobby(payload.lobbyId);
     if (!lobby) return fail(socket, "Lobby not found.");

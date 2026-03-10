@@ -3,6 +3,7 @@ export const EVENTS = {
   SESSION_ACK: "session:ack",
 
   LOBBY_CREATE: "lobby:create",
+  LOBBY_DELETE: "lobby:delete",
   LOBBY_LIST: "lobby:list",
   LOBBY_LIST_UPDATE: "lobby:list:update",
   LOBBY_OPEN_SETUP: "lobby:open-setup",

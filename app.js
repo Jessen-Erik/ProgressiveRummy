@@ -16,6 +16,7 @@ const EVENTS = {
   SESSION_HELLO: "session:hello",
   SESSION_ACK: "session:ack",
   LOBBY_CREATE: "lobby:create",
+  LOBBY_DELETE: "lobby:delete",
   LOBBY_LIST: "lobby:list",
   LOBBY_LIST_UPDATE: "lobby:list:update",
   LOBBY_OPEN_SETUP: "lobby:open-setup",
@@ -860,6 +861,9 @@ function renderLobbyList() {
     const ownerOpenButton = lobby.phase === "setup"
       ? `<button class="secondary" data-action="open-setup" data-lobby="${lobby.id}">Open Setup</button>`
       : "";
+    const ownerDeleteButton = lobby.ownerSessionId && state.sessionId && lobby.ownerSessionId === state.sessionId
+      ? `<button class="secondary" data-action="delete-lobby" data-lobby="${lobby.id}">Delete Lobby</button>`
+      : "";
 
     return `
       <div class="lobby-item">
@@ -869,6 +873,7 @@ function renderLobbyList() {
         <div class="lobby-meta">Names: ${names.length ? names.join(", ") : "(none)"}</div>
         <div class="row">
           ${ownerOpenButton}
+          ${ownerDeleteButton}
           ${setupJoinButtons}
           ${takeoverButtons}
           ${spectatorButton}
@@ -1127,8 +1132,26 @@ function handleLobbyListClick(e) {
     takeoverAiSeat(lobbyId, seat);
   } else if (action === "open-setup") {
     openSetupLobby(lobbyId);
+  } else if (action === "delete-lobby") {
+    deleteLobby(lobbyId);
   }
   renderLobbyList();
+}
+
+function deleteLobby(lobbyId) {
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server.");
+    return;
+  }
+  const lobby = state.lobbies.find((l) => l.id === lobbyId);
+  if (!lobby) return;
+  if (lobby.ownerSessionId !== state.sessionId) {
+    alert("Only the lobby owner can delete this lobby.");
+    return;
+  }
+  if (!confirm(`Delete lobby "${lobby.name}"?`)) return;
+  emitSocket(EVENTS.LOBBY_DELETE, { lobbyId });
+  if (state.activeLobbyId === lobbyId) state.activeLobbyId = null;
 }
 
 function takeoverAiSeat(lobbyId, seatIndex) {
