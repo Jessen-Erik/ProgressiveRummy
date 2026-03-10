@@ -140,7 +140,11 @@ export class LobbyStore {
     }
 
     const session = this.upsertSession(socketId, playerName);
-    if (session.role !== "spectator") {
+    if (session.lobbyId && session.lobbyId !== lobby.id) {
+      return { ok: false, reason: "Leave your current lobby before taking an AI seat in another lobby." };
+    }
+    // Allow takeover from spectator or unassigned users.
+    if (session.role !== "spectator" && session.role !== "none") {
       return { ok: false, reason: "Only spectators can take over an AI seat." };
     }
 
