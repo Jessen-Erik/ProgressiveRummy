@@ -68,7 +68,8 @@ const state = {
   socket: null,
   sessionId: null,
   isApplyingServerState: false,
-  leaderboard: []
+  leaderboard: [],
+  lobbyRefreshTimer: null
 };
 state.selectedCardBackStyle = 1;
 
@@ -182,6 +183,20 @@ function emitSocket(eventName, payload) {
   return true;
 }
 
+function setLobbyRefreshActive(active) {
+  if (active) {
+    if (state.lobbyRefreshTimer) return;
+    state.lobbyRefreshTimer = setInterval(() => {
+      emitSocket(EVENTS.LOBBY_LIST);
+    }, 3000);
+    return;
+  }
+  if (state.lobbyRefreshTimer) {
+    clearInterval(state.lobbyRefreshTimer);
+    state.lobbyRefreshTimer = null;
+  }
+}
+
 function chatSenderName() {
   if (state.session?.name) return state.session.name;
   const viewer = viewerPlayerObj();
@@ -252,6 +267,21 @@ function cardLabel(card) {
 
 function suitSymbol(suit) {
   return { C: "♣", D: "♦", H: "♥", S: "♠" }[suit];
+}
+
+function suitName(suit) {
+  return { C: "Clubs", D: "Diamonds", H: "Hearts", S: "Spades" }[suit] || suit;
+}
+
+function meldDisplayLabel(meld) {
+  if (meld.type === "set") {
+    const v = validateSet(meld.cards);
+    const rank = v.ok && v.rank ? v.rank : "?";
+    return `SET of ${rank}`;
+  }
+  const v = validateRun(meld.cards);
+  const suit = v.ok && v.suit ? suitName(v.suit) : "?";
+  return `RUN of ${suit}`;
 }
 
 function renderCardModel(card, opts = {}) {
@@ -748,6 +778,7 @@ function startRound() {
 
 function showHome() {
   clearAiTimer();
+  setLobbyRefreshActive(true);
   el("homeArea").style.display = "block";
   el("setupArea").style.display = "none";
   el("scoreBar").style.display = "none";
@@ -758,6 +789,7 @@ function showHome() {
 }
 
 function showSetup() {
+  setLobbyRefreshActive(false);
   el("homeArea").style.display = "none";
   el("setupArea").style.display = "block";
   el("scoreBar").style.display = "none";
@@ -765,6 +797,7 @@ function showSetup() {
 }
 
 function showGame() {
+  setLobbyRefreshActive(false);
   el("homeArea").style.display = "none";
   el("setupArea").style.display = "none";
   el("scoreBar").style.display = "block";
@@ -1225,11 +1258,18 @@ function offerDiscardDecision(take) {
     state.buyingOrder = [];
     let idx = nextIndex(state.currentPlayer);
     while (idx !== state.currentPlayer) {
-      state.buyingOrder.push(idx);
+      if (!state.players[idx]?.hasMetRound) {
+        state.buyingOrder.push(idx);
+      }
       idx = nextIndex(idx);
     }
     state.buyingIndex = 0;
-    addLog(`${p.name} declined discard. Buying phase begins.`);
+    if (state.buyingOrder.length === 0) {
+      state.phase = "currentDraw";
+      addLog(`${p.name} declined discard. No eligible buyers (players already down cannot buy).`);
+    } else {
+      addLog(`${p.name} declined discard. Buying phase begins.`);
+    }
   }
 
   renderAll();
@@ -1240,7 +1280,23 @@ function buyerDecision(buy) {
   if (state.phase !== "buying") return;
   if (!state.turnDiscardDecisionMade) return;
   const buyerIdx = state.buyingOrder[state.buyingIndex];
+  if (buyerIdx === undefined || buyerIdx === null) {
+    state.phase = "currentDraw";
+    renderAll();
+    syncGameStateToServer();
+    return;
+  }
   const buyer = state.players[buyerIdx];
+  if (!buyer || buyer.hasMetRound) {
+    state.buyingIndex += 1;
+    if (state.buyingIndex >= state.buyingOrder.length) {
+      state.phase = "currentDraw";
+      addLog("All eligible buyers passed.");
+    }
+    renderAll();
+    syncGameStateToServer();
+    return;
+  }
   const topDiscard = state.discardPile[state.discardPile.length - 1];
 
   if (buy) {
@@ -1536,6 +1592,10 @@ function renderTurnControls() {
   if (state.phase === "buying") {
     const buyerIdx = state.buyingOrder[state.buyingIndex];
     const buyer = state.players[buyerIdx];
+    if (!buyer || buyer.hasMetRound) {
+      root.innerHTML = `<p class="tiny muted">Buying phase: skipping ineligible buyers...</p>`;
+      return;
+    }
     if (!canControlTurn) {
       root.innerHTML = `<p class="tiny muted">Spectator view: buying phase in progress.</p>`;
       return;
@@ -1679,7 +1739,7 @@ function renderHandActions() {
   }
 
   const meldOptions = state.tableMelds
-    .map((m) => `<option value="${m.id}">#${m.id} ${m.type.toUpperCase()} (${state.players[m.ownerIndex].name})</option>`)
+    .map((m) => `<option value="${m.id}">#${m.id} ${meldDisplayLabel(m)} (${state.players[m.ownerIndex].name})</option>`)
     .join("");
 
   root.innerHTML = `
