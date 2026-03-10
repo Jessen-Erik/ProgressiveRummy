@@ -81,7 +81,9 @@ const state = {
   lastLobbyId: null,
   theme: "light",
   roundSummary: null,
-  showRoundSummary: false
+  showRoundSummary: false,
+  roundRevealEndsAt: 0,
+  roundRevealShownFor: 0
 };
 state.selectedCardBackStyle = 1;
 
@@ -126,6 +128,7 @@ function upsertLobbyFromSnapshot(snapshot) {
 
 function applyGameStateSnapshot(gameState) {
   if (!gameState) return;
+  const previousRound = state.round;
   state.isApplyingServerState = true;
   state.round = gameState.round;
   state.dealerIndex = gameState.dealerIndex;
@@ -153,6 +156,10 @@ function applyGameStateSnapshot(gameState) {
     ? gameState.pendingRoundWinnerIndex
     : null;
   state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
+  if (gameState.round !== previousRound && state.roundRevealShownFor !== gameState.round) {
+    state.roundRevealShownFor = gameState.round;
+    state.roundRevealEndsAt = Date.now() + 1600;
+  }
 
   const lobby = activeLobby();
   if (state.session.role === "spectator") {
@@ -351,6 +358,14 @@ function meldDisplayLabel(meld) {
   return `RUN of ${suit}`;
 }
 
+function renderCardFaceContent(card) {
+  return `
+    <div class="corner-top">${card.rank}${suitSymbol(card.suit)}</div>
+    <div class="center">${suitSymbol(card.suit)}</div>
+    <div class="corner-bottom">${card.rank}${suitSymbol(card.suit)}</div>
+  `;
+}
+
 function renderCardModel(card, opts = {}) {
   const selectable = !!opts.selectable;
   const checked = !!opts.checked;
@@ -366,10 +381,24 @@ function renderCardModel(card, opts = {}) {
   return `
     <label class="playing-card ${css} ${selectCss} ${disabledCss} ${extraClass}">
       ${checkbox}
-      <div class="corner-top">${card.rank}${suitSymbol(card.suit)}</div>
-      <div class="center">${suitSymbol(card.suit)}</div>
-      <div class="corner-bottom">${card.rank}${suitSymbol(card.suit)}</div>
+      ${renderCardFaceContent(card)}
     </label>
+  `;
+}
+
+function renderFlippingCardModel(card, backStyle, delayMs) {
+  const css = RED_SUITS.has(card.suit) ? "red" : "black";
+  return `
+    <div class="flip-card" style="--flip-delay:${delayMs}ms;">
+      <div class="flip-card-inner">
+        <div class="flip-face flip-front playing-card ${css}">
+          ${renderCardFaceContent(card)}
+        </div>
+        <div class="flip-face flip-back">
+          <div class="card-back back-style-${backStyle}"></div>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -1109,6 +1138,8 @@ function startRound() {
   state.lastDiscarderIndex = null;
   state.chatRoundCount = 0;
   state.chatRecentTimestamps = [];
+  state.roundRevealShownFor = state.round;
+  state.roundRevealEndsAt = Date.now() + 1600;
 
   addLog(`Round ${state.round} started. Dealer: ${state.players[state.dealerIndex].name}. ${state.players[state.currentPlayer].name} begins.`);
   renderAll();
@@ -2138,17 +2169,27 @@ function renderHand() {
   if (!p) return;
   const canInteract = !!current && state.currentPlayer === state.viewerIndex && !current.isAI && state.phase === "mainAction";
   const draftCardIds = new Set(state.draftMelds.flatMap((m) => m.cards.map(cardId)));
+  const lobby = activeLobby();
+  const backStyle = lobby?.cardBackStyle || 1;
+  const revealActive = Date.now() < state.roundRevealEndsAt;
 
-  for (const c of p.hand) {
-    const inDraftMeld = draftCardIds.has(cardId(c));
-    const cardNode = document.createElement("div");
-    cardNode.innerHTML = renderCardModel(c, {
-      selectable: true,
-      checked: state.selectedCardIds.has(cardId(c)),
-      disabled: !canInteract,
-      extraClass: inDraftMeld ? "in-draft-meld" : ""
-    });
-    root.appendChild(cardNode.firstElementChild);
+  if (revealActive) {
+    root.innerHTML = p.hand.map((c, i) => renderFlippingCardModel(c, backStyle, i * 55)).join("");
+    setTimeout(() => {
+      if (Date.now() >= state.roundRevealEndsAt) renderHand();
+    }, 1750);
+  } else {
+    for (const c of p.hand) {
+      const inDraftMeld = draftCardIds.has(cardId(c));
+      const cardNode = document.createElement("div");
+      cardNode.innerHTML = renderCardModel(c, {
+        selectable: true,
+        checked: state.selectedCardIds.has(cardId(c)),
+        disabled: !canInteract,
+        extraClass: inDraftMeld ? "in-draft-meld" : ""
+      });
+      root.appendChild(cardNode.firstElementChild);
+    }
   }
 
   root.querySelectorAll("input[type='checkbox']").forEach((cb) => {
