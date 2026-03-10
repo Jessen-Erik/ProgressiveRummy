@@ -58,6 +58,7 @@ const state = {
   buyingOrder: [],
   buyingIndex: 0,
   discardBoughtBy: null,
+  lastDiscarderIndex: null,
   gameOver: false,
   aiTimer: null,
   viewerIndex: 0,
@@ -69,13 +70,46 @@ const state = {
   socket: null,
   sessionId: null,
   isApplyingServerState: false,
-  leaderboard: [],
+  leaderboard: {
+    totalWins: [],
+    lowestWinningScores: []
+  },
   lobbyRefreshTimer: null,
-  lastLobbyId: null
+  lastLobbyId: null,
+  theme: "light",
+  roundSummary: null,
+  showRoundSummary: false
 };
 state.selectedCardBackStyle = 1;
 
 const el = (id) => document.getElementById(id);
+
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  state.theme = next;
+  document.body.setAttribute("data-theme", next);
+  const btn = el("themeToggle");
+  if (btn) btn.textContent = next === "dark" ? "Light Theme" : "Dark Theme";
+  try {
+    localStorage.setItem("pr_theme", next);
+  } catch (_err) {
+    // Ignore storage errors in restricted environments.
+  }
+}
+
+function initTheme() {
+  let saved = "light";
+  try {
+    saved = localStorage.getItem("pr_theme") || "light";
+  } catch (_err) {
+    saved = "light";
+  }
+  applyTheme(saved);
+}
+
+function toggleTheme() {
+  applyTheme(state.theme === "dark" ? "light" : "dark");
+}
 
 function activeLobby() {
   return state.lobbies.find((l) => l.id === state.activeLobbyId) || null;
@@ -102,6 +136,7 @@ function applyGameStateSnapshot(gameState) {
   state.buyingOrder = gameState.buyingOrder || [];
   state.buyingIndex = gameState.buyingIndex || 0;
   state.discardBoughtBy = gameState.discardBoughtBy ?? null;
+  state.lastDiscarderIndex = Number.isInteger(gameState.lastDiscarderIndex) ? gameState.lastDiscarderIndex : null;
   state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
   state.players = gameState.players || [];
 
@@ -157,7 +192,20 @@ function connectSocketIfAvailable() {
   });
 
   socket.on(EVENTS.LEADERBOARD_UPDATE, (rows) => {
-    state.leaderboard = Array.isArray(rows) ? rows.map((r) => ({ name: r.name, wins: r.wins })) : [];
+    if (Array.isArray(rows)) {
+      // Backward compatibility with old server payload.
+      state.leaderboard = {
+        totalWins: rows.map((r) => ({ name: r.name, wins: r.wins })),
+        lowestWinningScores: []
+      };
+    } else {
+      state.leaderboard = {
+        totalWins: Array.isArray(rows?.totalWins) ? rows.totalWins.map((r) => ({ name: r.name, wins: r.wins })) : [],
+        lowestWinningScores: Array.isArray(rows?.lowestWinningScores)
+          ? rows.lowestWinningScores.map((r) => ({ name: r.name, score: r.score }))
+          : []
+      };
+    }
     renderLeaderboard();
   });
 
@@ -385,6 +433,7 @@ function serializeCurrentGameState() {
     buyingOrder: state.buyingOrder,
     buyingIndex: state.buyingIndex,
     discardBoughtBy: state.discardBoughtBy,
+    lastDiscarderIndex: state.lastDiscarderIndex,
     players: state.players
   };
 }
@@ -472,28 +521,34 @@ function validateRun(cards) {
   const suit = nonWild[0].suit;
   if (!nonWild.every((c) => c.suit === suit)) return { ok: false, reason: "Run non-wild cards must share suit." };
 
-  const ranks = nonWild.map((c) => rankToValue(c.rank)).sort((a, b) => a - b);
-  for (let i = 1; i < ranks.length; i++) {
-    if (ranks[i] === ranks[i - 1]) {
-      return { ok: false, reason: "Run cannot include duplicate non-wild ranks." };
-    }
-  }
-
   const n = cards.length;
-  for (let start = 1; start <= 14 - n; start++) {
-    const seq = new Set(Array.from({ length: n }, (_, i) => start + i));
-    let allIncluded = true;
-    for (const r of ranks) {
-      if (!seq.has(r)) {
-        allIncluded = false;
-        break;
-      }
-    }
-    if (!allIncluded) continue;
+  const wildCount = wilds.length;
+  const lowRanks = nonWild.map((c) => rankToValue(c.rank));
+  const highRanks = nonWild.map((c) => (c.rank === "A" ? 14 : rankToValue(c.rank)));
 
-    if (n - ranks.length === wilds.length) {
-      return { ok: true, suit };
+  const canMakeSequence = (rawRanks) => {
+    const ranks = [...rawRanks].sort((a, b) => a - b);
+    for (let i = 1; i < ranks.length; i++) {
+      if (ranks[i] === ranks[i - 1]) return false;
     }
+    // With Ace high support, highest consecutive start is 15 - run length.
+    for (let start = 1; start <= 15 - n; start++) {
+      const seq = new Set(Array.from({ length: n }, (_, i) => start + i));
+      let allIncluded = true;
+      for (const r of ranks) {
+        if (!seq.has(r)) {
+          allIncluded = false;
+          break;
+        }
+      }
+      if (!allIncluded) continue;
+      if (n - ranks.length === wildCount) return true;
+    }
+    return false;
+  };
+
+  if (canMakeSequence(lowRanks) || canMakeSequence(highRanks)) {
+    return { ok: true, suit };
   }
 
   return { ok: false, reason: "Run cards cannot form one consecutive sequence." };
@@ -501,6 +556,96 @@ function validateRun(cards) {
 
 function validateMeldByType(type, cards) {
   return type === "set" ? validateSet(cards) : validateRun(cards);
+}
+
+function runValueForMode(card, aceHigh) {
+  if (card.rank === "A") return aceHigh ? 14 : 1;
+  return rankToValue(card.rank);
+}
+
+function runCandidates(cards) {
+  const wilds = cards.filter(isWild);
+  const nonWild = cards.filter((c) => !isWild(c));
+  if (nonWild.length === 0) return [];
+
+  const n = cards.length;
+  const out = [];
+
+  for (const aceHigh of [false, true]) {
+    const mapped = nonWild.map((c) => ({ card: c, value: runValueForMode(c, aceHigh) }));
+    const byValue = new Map();
+    let duplicate = false;
+    for (const entry of mapped) {
+      if (byValue.has(entry.value)) {
+        duplicate = true;
+        break;
+      }
+      byValue.set(entry.value, entry.card);
+    }
+    if (duplicate) continue;
+
+    for (let start = 1; start <= 15 - n; start++) {
+      const seq = Array.from({ length: n }, (_, i) => start + i);
+      const seqSet = new Set(seq);
+      let includesAll = true;
+      for (const entry of mapped) {
+        if (!seqSet.has(entry.value)) {
+          includesAll = false;
+          break;
+        }
+      }
+      if (!includesAll) continue;
+
+      const missing = seq.filter((v) => !byValue.has(v));
+      if (missing.length !== wilds.length) continue;
+
+      const wildQueue = [...wilds];
+      const ordered = [];
+      const wildValues = [];
+      for (let i = 0; i < seq.length; i++) {
+        const v = seq[i];
+        if (byValue.has(v)) {
+          ordered.push(byValue.get(v));
+        } else {
+          ordered.push(wildQueue.shift());
+          wildValues.push(v);
+        }
+      }
+
+      out.push({
+        aceHigh,
+        start,
+        top: seq[seq.length - 1],
+        ordered,
+        wildValues,
+        hasBottomWild: wildValues.includes(seq[0]),
+        hasTopWild: wildValues.includes(seq[seq.length - 1])
+      });
+    }
+  }
+
+  return out;
+}
+
+function pickRunCandidate(cards, preferEdgeWild = null) {
+  let candidates = runCandidates(cards);
+  if (!candidates.length) return null;
+
+  if (preferEdgeWild === "top") {
+    const filtered = candidates.filter((c) => c.hasTopWild);
+    if (filtered.length) candidates = filtered;
+  } else if (preferEdgeWild === "bottom") {
+    const filtered = candidates.filter((c) => c.hasBottomWild);
+    if (filtered.length) candidates = filtered;
+  }
+
+  candidates.sort((a, b) => (b.top - a.top) || (b.start - a.start));
+  return candidates[0];
+}
+
+function orderRunCardsLowToHigh(cards, preferEdgeWild = null) {
+  const chosen = pickRunCandidate(cards, preferEdgeWild);
+  return chosen ? chosen.ordered : [...cards];
 }
 
 function buildCandidateMelds(hand, type) {
@@ -704,10 +849,98 @@ function scoreHand(cards) {
   return cards.reduce((sum, c) => sum + cardPoints(c), 0);
 }
 
+function buildRoundSummary(winnerIndex) {
+  const meldMap = new Map(state.tableMelds.map((m) => [m.id, m]));
+  const players = state.players.map((p, idx) => {
+    const roundPoints = idx === winnerIndex ? 0 : scoreHand(p.hand);
+    const melds = (p.melds || [])
+      .map((id) => meldMap.get(id))
+      .filter(Boolean)
+      .map((m) => ({
+        id: m.id,
+        type: m.type,
+        cards: [...m.cards]
+      }));
+    return {
+      name: p.name,
+      isWinner: idx === winnerIndex,
+      roundPoints,
+      remainingCards: [...p.hand],
+      melds
+    };
+  });
+  return {
+    round: state.round,
+    endedBy: state.players[winnerIndex]?.name || "Unknown",
+    players
+  };
+}
+
+function renderRoundSummaryModal() {
+  const modal = el("roundSummaryModal");
+  const title = el("roundSummaryTitle");
+  const body = el("roundSummaryBody");
+  if (!modal || !title || !body) return;
+  if (!state.showRoundSummary || !state.roundSummary) {
+    modal.style.display = "none";
+    return;
+  }
+
+  const summary = state.roundSummary;
+  title.textContent = `Round ${summary.round} Complete`;
+
+  body.innerHTML = `
+    <p class="tiny">${summary.endedBy} ended the round.</p>
+    <div class="round-summary-grid">
+      ${summary.players.map((p) => `
+        <div class="round-summary-player">
+          <h3 class="summary-title">${p.name}${p.isWinner ? " (Round Winner)" : ""}</h3>
+          <p class="summary-line"><strong>Points Gained:</strong> ${p.roundPoints}</p>
+          <p class="summary-line"><strong>Melds:</strong></p>
+          ${p.melds.length
+            ? p.melds.map((m) => `
+              <div class="summary-line">
+                #${m.id} ${m.type.toUpperCase()}: ${m.cards.map(cardLabel).join(", ")}
+              </div>
+            `).join("")
+            : `<p class="summary-line muted">No melds played.</p>`
+          }
+          <p class="summary-line"><strong>Remaining Cards:</strong></p>
+          ${p.remainingCards.length
+            ? `<div class="summary-line">${p.remainingCards.map(cardLabel).join(", ")}</div>`
+            : `<p class="summary-line muted">No cards remaining.</p>`
+          }
+        </div>
+      `).join("")}
+    </div>
+  `;
+  modal.style.display = "flex";
+}
+
+function closeRoundSummary() {
+  state.showRoundSummary = false;
+  renderRoundSummaryModal();
+}
+
+function renderLastRoundSummaryButton() {
+  const btn = el("viewLastRoundSummary");
+  if (!btn) return;
+  const hasSummary = !!state.roundSummary;
+  btn.disabled = !hasSummary;
+}
+
+function viewLastRoundSummary() {
+  if (!state.roundSummary) return;
+  state.showRoundSummary = true;
+  renderRoundSummaryModal();
+}
+
 function roundEnd(winnerIndex) {
   clearAiTimer();
   const lobby = activeLobby();
   const winner = state.players[winnerIndex];
+  state.roundSummary = buildRoundSummary(winnerIndex);
+  state.showRoundSummary = true;
   addLog(`${winner.name} ended Round ${state.round}. Scoring remaining hands...`);
 
   for (let i = 0; i < state.players.length; i++) {
@@ -770,6 +1003,7 @@ function startRound() {
   state.currentPlayer = nextIndex(state.dealerIndex);
   state.phase = "offerDiscard";
   state.discardBoughtBy = null;
+  state.lastDiscarderIndex = null;
   state.buyingOrder = [];
   state.buyingIndex = 0;
   state.turnDiscardDecisionMade = false;
@@ -886,17 +1120,36 @@ function renderLobbyList() {
 function renderLeaderboard() {
   const wrap = el("leaderboardList");
   if (!wrap) return;
-  if (!state.leaderboard.length) {
-    wrap.innerHTML = "<p class='tiny muted'>No wins recorded yet.</p>";
-    return;
-  }
+  const winsRows = state.leaderboard.totalWins || [];
+  const lowScoreRows = state.leaderboard.lowestWinningScores || [];
   wrap.className = "leaderboard-list";
-  wrap.innerHTML = state.leaderboard.map((entry, idx) => `
-    <div class="leaderboard-item">
-      <span>${idx + 1}. ${entry.name}</span>
-      <strong>${entry.wins} win(s)</strong>
+  const lowScoresHtml = lowScoreRows.length
+    ? lowScoreRows.map((entry, idx) => `
+      <div class="leaderboard-item">
+        <span>${idx + 1}. ${entry.name}</span>
+        <strong>${entry.score} point(s)</strong>
+      </div>
+    `).join("")
+    : "<p class='tiny muted'>No completed games yet.</p>";
+  const winsHtml = winsRows.length
+    ? winsRows.map((entry, idx) => `
+      <div class="leaderboard-item">
+        <span>${idx + 1}. ${entry.name}</span>
+        <strong>${entry.wins} win(s)</strong>
+      </div>
+    `).join("")
+    : "<p class='tiny muted'>No wins recorded yet.</p>";
+
+  wrap.innerHTML = `
+    <div class="card">
+      <h3>Lowest Winning Scores</h3>
+      ${lowScoresHtml}
     </div>
-  `).join("");
+    <div class="card">
+      <h3>Total Wins</h3>
+      ${winsHtml}
+    </div>
+  `;
 }
 
 function renderRejoinButton() {
@@ -1287,6 +1540,9 @@ function aiMainAction(player) {
         }
         if (bestMeld && randomChance(0.88)) {
           bestMeld.cards.push(c);
+          if (bestMeld.type === "run") {
+            bestMeld.cards = orderRunCardsLowToHigh(bestMeld.cards);
+          }
           removeCardsFromHand(player, [c]);
           addLog(`${player.name} laid off ${cardLabel(c)} to Meld #${bestMeld.id}.`);
           changed = true;
@@ -1322,7 +1578,7 @@ function offerDiscardDecision(take) {
     state.buyingOrder = [];
     let idx = nextIndex(state.currentPlayer);
     while (idx !== state.currentPlayer) {
-      if (!state.players[idx]?.hasMetRound) {
+      if (idx !== state.lastDiscarderIndex && !state.players[idx]?.hasMetRound) {
         state.buyingOrder.push(idx);
       }
       idx = nextIndex(idx);
@@ -1453,15 +1709,18 @@ function submitRoundMelds() {
   }
 
   for (const draft of state.draftMelds) {
+    const meldCards = draft.type === "run"
+      ? orderRunCardsLowToHigh(draft.cards)
+      : [...draft.cards];
     const meld = {
       id: state.nextMeldId++,
       ownerIndex: state.currentPlayer,
       type: draft.type,
-      cards: [...draft.cards]
+      cards: meldCards
     };
     state.tableMelds.push(meld);
     p.melds.push(meld.id);
-    removeCardsFromHand(p, draft.cards);
+    removeCardsFromHand(p, meldCards);
   }
 
   p.hasMetRound = true;
@@ -1500,6 +1759,7 @@ function layOffToMeld() {
     return;
   }
 
+  const previousRunCandidate = meld.type === "run" ? pickRunCandidate(meld.cards) : null;
   const combined = [...meld.cards, ...cards];
   const v = validateMeldByType(meld.type, combined);
   if (!v.ok) {
@@ -1507,7 +1767,24 @@ function layOffToMeld() {
     return;
   }
 
-  meld.cards = combined;
+  if (meld.type === "run") {
+    let preferEdgeWild = null;
+    const addedNonWild = cards.filter((c) => !isWild(c));
+    const replacedWildValue = !!previousRunCandidate
+      && previousRunCandidate.wildValues.length > 0
+      && addedNonWild.some((c) => previousRunCandidate.wildValues.includes(runValueForMode(c, previousRunCandidate.aceHigh)));
+
+    if (replacedWildValue) {
+      const chooseTop = confirm(
+        "A laid-off card replaced a wild in this run.\nClick OK to place the freed wild at the TOP of the run.\nClick Cancel to place it at the BOTTOM."
+      );
+      preferEdgeWild = chooseTop ? "top" : "bottom";
+    }
+
+    meld.cards = orderRunCardsLowToHigh(combined, preferEdgeWild);
+  } else {
+    meld.cards = combined;
+  }
   removeCardsFromHand(p, cards);
   state.selectedCardIds.clear();
   addLog(`${p.name} laid off ${cards.map(cardLabel).join(", ")} to Meld #${meld.id}.`);
@@ -1533,6 +1810,7 @@ function discardSelected() {
 
   removeCardsFromHand(p, [c]);
   state.discardPile.push(c);
+  state.lastDiscarderIndex = state.currentPlayer;
   state.selectedCardIds.clear();
   state.draftMelds = [];
 
@@ -1736,13 +2014,16 @@ function renderHand() {
   root.innerHTML = "";
   if (!p) return;
   const canInteract = !!current && state.currentPlayer === state.viewerIndex && !current.isAI && state.phase === "mainAction";
+  const draftCardIds = new Set(state.draftMelds.flatMap((m) => m.cards.map(cardId)));
 
   for (const c of p.hand) {
+    const inDraftMeld = draftCardIds.has(cardId(c));
     const cardNode = document.createElement("div");
     cardNode.innerHTML = renderCardModel(c, {
       selectable: true,
       checked: state.selectedCardIds.has(cardId(c)),
-      disabled: !canInteract
+      disabled: !canInteract,
+      extraClass: inDraftMeld ? "in-draft-meld" : ""
     });
     root.appendChild(cardNode.firstElementChild);
   }
@@ -1888,6 +2169,8 @@ function renderAll() {
   renderTableMelds();
   renderLog();
   renderChat();
+  renderLastRoundSummaryButton();
+  renderRoundSummaryModal();
   scheduleAiAction();
 }
 
@@ -1940,6 +2223,7 @@ el("startGame").addEventListener("click", () => {
 el("backToLobbies").addEventListener("click", showHome);
 el("returnToLobbies").addEventListener("click", showHome);
 el("rejoinLobby").addEventListener("click", rejoinLastLobby);
+el("themeToggle").addEventListener("click", toggleTheme);
 el("sortRank").addEventListener("click", () => sortHand("rank"));
 el("sortSuit").addEventListener("click", () => sortHand("suit"));
 el("sendChat").addEventListener("click", handleSendChat);
@@ -1949,7 +2233,10 @@ el("chatInput").addEventListener("keydown", (e) => {
     handleSendChat();
   }
 });
+el("closeRoundSummary").addEventListener("click", closeRoundSummary);
+el("viewLastRoundSummary").addEventListener("click", viewLastRoundSummary);
 
+initTheme();
 showHome();
 renderCardBackPicker();
 connectSocketIfAvailable();

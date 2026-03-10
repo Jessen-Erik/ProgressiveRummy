@@ -38,7 +38,7 @@ function emitLobbyList() {
 }
 
 function emitLeaderboard() {
-  io.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardTop(10));
+  io.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardSnapshot(10));
 }
 
 function emitLobbySnapshot(lobbyId) {
@@ -73,7 +73,7 @@ function closeLobbyIfNoHumans(lobby) {
 
 io.on("connection", (socket) => {
   socket.emit(EVENTS.LOBBY_LIST_UPDATE, store.listLobbySummaries());
-  socket.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardTop(10));
+  socket.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardSnapshot(10));
 
   socket.on(EVENTS.SESSION_HELLO, (payload = {}) => {
     const session = store.upsertSession(socket.id, payload.name || "Player");

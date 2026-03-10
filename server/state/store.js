@@ -19,6 +19,7 @@ export class LobbyStore {
     this.lobbies = new Map();
     this.socketToSession = new Map();
     this.userWins = new Map();
+    this.lowScoreWins = [];
   }
 
   upsertSession(socketId, name) {
@@ -319,10 +320,17 @@ export class LobbyStore {
 
     const sorted = [...game.players].sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
     const winnerName = normalizeName(sorted[0]?.name, "");
+    const winnerScore = Number(sorted[0]?.score ?? 0);
     if (!winnerName) return null;
 
     const prev = this.userWins.get(winnerName) || 0;
     this.userWins.set(winnerName, prev + 1);
+    this.lowScoreWins.push({
+      name: winnerName,
+      score: winnerScore,
+      ts: Date.now()
+    });
+    this.lowScoreWins = this.lowScoreWins.slice(-5000);
     lobby.hasRecordedWin = true;
     lobby.phase = "completed";
     return winnerName;
@@ -333,6 +341,20 @@ export class LobbyStore {
       .map(([name, wins]) => ({ name, wins }))
       .sort((a, b) => (b.wins - a.wins) || a.name.localeCompare(b.name))
       .slice(0, limit);
+  }
+
+  lowestWinningScoresTop(limit = 10) {
+    return [...this.lowScoreWins]
+      .sort((a, b) => (a.score - b.score) || (a.ts - b.ts) || a.name.localeCompare(b.name))
+      .slice(0, limit)
+      .map((row) => ({ name: row.name, score: row.score }));
+  }
+
+  leaderboardSnapshot(limit = 10) {
+    return {
+      totalWins: this.leaderboardTop(limit),
+      lowestWinningScores: this.lowestWinningScoresTop(limit)
+    };
   }
 
   addChat({ socketId, lobbyId, text, now = Date.now() }) {
