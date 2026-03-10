@@ -1,0 +1,1632 @@
+const SUITS = ["C", "D", "H", "S"];
+const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+const RED_SUITS = new Set(["D", "H"]);
+
+const ROUND_REQUIREMENTS = {
+  1: { sets: 2, runs: 0 },
+  2: { sets: 1, runs: 1 },
+  3: { sets: 0, runs: 2 },
+  4: { sets: 3, runs: 0 },
+  5: { sets: 2, runs: 1 },
+  6: { sets: 1, runs: 2 },
+  7: { sets: 0, runs: 3 }
+};
+
+const state = {
+  lobbies: [],
+  nextLobbyId: 1,
+  activeLobbyId: null,
+  session: { name: "", role: "none", seatIndex: -1 },
+  players: [],
+  round: 1,
+  dealerIndex: 0,
+  currentPlayer: 0,
+  drawPile: [],
+  discardPile: [],
+  tableMelds: [],
+  nextMeldId: 1,
+  phase: "setup",
+  log: [],
+  draftMelds: [],
+  selectedCardIds: new Set(),
+  buyingOrder: [],
+  buyingIndex: 0,
+  discardBoughtBy: null,
+  gameOver: false,
+  aiTimer: null,
+  viewerIndex: 0,
+  lastDiscardRenderId: null,
+  turnDiscardDecisionMade: false,
+  chatMessages: [],
+  chatRecentTimestamps: [],
+  chatRoundCount: 0
+};
+state.selectedCardBackStyle = 1;
+
+const el = (id) => document.getElementById(id);
+
+function activeLobby() {
+  return state.lobbies.find((l) => l.id === state.activeLobbyId) || null;
+}
+
+function chatSenderName() {
+  if (state.session?.name) return state.session.name;
+  const viewer = viewerPlayerObj();
+  return viewer?.name || "User";
+}
+
+function addChatMessage(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return { ok: false, reason: "Message cannot be empty." };
+  if (trimmed.length > 200) return { ok: false, reason: "Message exceeds 200 characters." };
+  if (state.phase === "setup" || state.phase === "gameOver") return { ok: false, reason: "Chat is available during active rounds only." };
+
+  const now = Date.now();
+  state.chatRecentTimestamps = state.chatRecentTimestamps.filter((t) => now - t < 10000);
+  if (state.chatRecentTimestamps.length >= 5) {
+    return { ok: false, reason: "Rate limit: max 5 messages per 10 seconds." };
+  }
+  if (state.chatRoundCount >= 100) {
+    return { ok: false, reason: "Round chat limit reached (100 messages)." };
+  }
+
+  state.chatRecentTimestamps.push(now);
+  state.chatRoundCount += 1;
+  state.chatMessages.push({
+    round: state.round,
+    sender: chatSenderName(),
+    text: trimmed,
+    ts: now
+  });
+  state.chatMessages = state.chatMessages.slice(-500);
+  return { ok: true };
+}
+
+function renderCardBackPicker() {
+  const wrap = el("cardBackPicker");
+  if (!wrap) return;
+  const options = [1, 2, 3, 4, 5];
+  wrap.innerHTML = options.map((n) => `
+    <button type="button" class="card-back-option ${state.selectedCardBackStyle === n ? "selected" : ""}" data-back="${n}">
+      <div class="card-back back-style-${n}"></div>
+      <div class="tiny">${n}</div>
+    </button>
+  `).join("");
+}
+
+function setCardBackChoice(styleNum) {
+  if (styleNum < 1 || styleNum > 5) return;
+  state.selectedCardBackStyle = styleNum;
+  renderCardBackPicker();
+}
+
+function cardId(card) { return `${card.rank}-${card.suit}-${card.deck}-${card.uid}`; }
+function isWild(card) { return card.rank === "2"; }
+
+function rankToValue(rank) {
+  if (rank === "A") return 1;
+  if (rank === "J") return 11;
+  if (rank === "Q") return 12;
+  if (rank === "K") return 13;
+  return Number(rank);
+}
+
+function cardPoints(card) {
+  if (card.rank === "2") return 20;
+  if (card.rank === "A") return 15;
+  if (["J", "Q", "K"].includes(card.rank)) return 10;
+  return Number(card.rank);
+}
+
+function cardLabel(card) {
+  const suitMap = { C: "♣", D: "♦", H: "♥", S: "♠" };
+  return `${card.rank}${suitMap[card.suit]}`;
+}
+
+function suitSymbol(suit) {
+  return { C: "♣", D: "♦", H: "♥", S: "♠" }[suit];
+}
+
+function renderCardModel(card, opts = {}) {
+  const selectable = !!opts.selectable;
+  const checked = !!opts.checked;
+  const disabled = !!opts.disabled;
+  const extraClass = opts.extraClass || "";
+  const css = RED_SUITS.has(card.suit) ? "red" : "black";
+  const selectCss = selectable ? "selectable" : "";
+  const disabledCss = disabled ? "disabled" : "";
+  const checkbox = selectable
+    ? `<input type="checkbox" ${checked ? "checked" : ""} data-id="${cardId(card)}" ${disabled ? "disabled" : ""} />`
+    : "";
+
+  return `
+    <label class="playing-card ${css} ${selectCss} ${disabledCss} ${extraClass}">
+      ${checkbox}
+      <div class="corner-top">${card.rank}${suitSymbol(card.suit)}</div>
+      <div class="center">${suitSymbol(card.suit)}</div>
+      <div class="corner-bottom">${card.rank}${suitSymbol(card.suit)}</div>
+    </label>
+  `;
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function buildDeck(deckCount) {
+  const cards = [];
+  let uid = 1;
+  for (let d = 1; d <= deckCount; d++) {
+    for (const suit of SUITS) {
+      for (const rank of RANKS) {
+        cards.push({ rank, suit, deck: d, uid: uid++ });
+      }
+    }
+  }
+  return shuffle(cards);
+}
+
+function dealCountForRound(round) {
+  return round <= 4 ? 10 : 12;
+}
+
+function requirementText(round) {
+  const req = ROUND_REQUIREMENTS[round];
+  return `Round ${round}: ${req.sets} set(s), ${req.runs} run(s)`;
+}
+
+function addLog(msg) {
+  state.log.unshift(msg);
+  state.log = state.log.slice(0, 200);
+  renderLog();
+}
+
+function rotateDealer() {
+  state.dealerIndex = (state.dealerIndex + 1) % state.players.length;
+}
+
+function nextIndex(idx) {
+  return (idx + 1) % state.players.length;
+}
+
+function reshuffleIfNeeded() {
+  if (state.drawPile.length > 0) return;
+  if (state.discardPile.length <= 1) return;
+  const top = state.discardPile.pop();
+  state.drawPile = shuffle(state.discardPile.splice(0));
+  state.discardPile = [top];
+  addLog("Draw pile was empty. Discard pile reshuffled into draw pile.");
+}
+
+function drawOne() {
+  reshuffleIfNeeded();
+  if (state.drawPile.length === 0) return null;
+  return state.drawPile.pop();
+}
+
+function currentPlayerObj() {
+  return state.players[state.currentPlayer];
+}
+
+function viewerPlayerObj() {
+  return state.players[state.viewerIndex];
+}
+
+function cardByIdInHand(player, id) {
+  return player.hand.find((c) => cardId(c) === id);
+}
+
+function selectedCardsFromHand() {
+  const player = currentPlayerObj();
+  return [...state.selectedCardIds]
+    .map((id) => cardByIdInHand(player, id))
+    .filter(Boolean);
+}
+
+function removeCardsFromHand(player, cards) {
+  const removeIds = new Set(cards.map(cardId));
+  player.hand = player.hand.filter((c) => !removeIds.has(cardId(c)));
+}
+
+function cardsPointsTotal(cards) {
+  return cards.reduce((sum, c) => sum + cardPoints(c), 0);
+}
+
+function combinations(arr, size) {
+  const out = [];
+  function walk(start, path) {
+    if (path.length === size) {
+      out.push([...path]);
+      return;
+    }
+    for (let i = start; i < arr.length; i++) {
+      path.push(arr[i]);
+      walk(i + 1, path);
+      path.pop();
+    }
+  }
+  walk(0, []);
+  return out;
+}
+
+function randomChance(probability) {
+  return Math.random() < probability;
+}
+
+function validateSet(cards) {
+  if (cards.length < 3) return { ok: false, reason: "A set needs at least 3 cards." };
+  const wilds = cards.filter(isWild);
+  const nonWild = cards.filter((c) => !isWild(c));
+  if (nonWild.length === 0) return { ok: false, reason: "A set cannot be made only of 2s." };
+  if (wilds.length > nonWild.length) return { ok: false, reason: "A set cannot have more wilds than non-wild cards." };
+  const rank = nonWild[0].rank;
+  if (!nonWild.every((c) => c.rank === rank)) return { ok: false, reason: "Set non-wild cards must match rank." };
+  return { ok: true, rank };
+}
+
+function validateRun(cards) {
+  if (cards.length < 4) return { ok: false, reason: "A run needs at least 4 cards." };
+  const wilds = cards.filter(isWild);
+  const nonWild = cards.filter((c) => !isWild(c));
+  if (nonWild.length === 0) return { ok: false, reason: "A run cannot be made only of 2s." };
+  if (wilds.length > nonWild.length) return { ok: false, reason: "A run cannot have more wilds than non-wild cards." };
+
+  const suit = nonWild[0].suit;
+  if (!nonWild.every((c) => c.suit === suit)) return { ok: false, reason: "Run non-wild cards must share suit." };
+
+  const ranks = nonWild.map((c) => rankToValue(c.rank)).sort((a, b) => a - b);
+  for (let i = 1; i < ranks.length; i++) {
+    if (ranks[i] === ranks[i - 1]) {
+      return { ok: false, reason: "Run cannot include duplicate non-wild ranks." };
+    }
+  }
+
+  const n = cards.length;
+  for (let start = 1; start <= 14 - n; start++) {
+    const seq = new Set(Array.from({ length: n }, (_, i) => start + i));
+    let allIncluded = true;
+    for (const r of ranks) {
+      if (!seq.has(r)) {
+        allIncluded = false;
+        break;
+      }
+    }
+    if (!allIncluded) continue;
+
+    if (n - ranks.length === wilds.length) {
+      return { ok: true, suit };
+    }
+  }
+
+  return { ok: false, reason: "Run cards cannot form one consecutive sequence." };
+}
+
+function validateMeldByType(type, cards) {
+  return type === "set" ? validateSet(cards) : validateRun(cards);
+}
+
+function buildCandidateMelds(hand, type) {
+  const minSize = type === "set" ? 3 : 4;
+  const maxSize = Math.min(hand.length, type === "set" ? 5 : 7);
+  const found = [];
+  const seen = new Set();
+
+  for (let size = minSize; size <= maxSize; size++) {
+    const groups = combinations(hand, size);
+    for (const g of groups) {
+      const v = validateMeldByType(type, g);
+      if (!v.ok) continue;
+      const key = g.map(cardId).sort().join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({
+        type,
+        cards: g,
+        ids: new Set(g.map(cardId)),
+        points: cardsPointsTotal(g),
+        anchor: type === "set" ? v.rank : v.suit
+      });
+    }
+  }
+
+  return found;
+}
+
+function conflictWithChosen(candidate, chosen) {
+  for (const m of chosen) {
+    for (const id of candidate.ids) {
+      if (m.ids.has(id)) return true;
+    }
+  }
+  return false;
+}
+
+function pickBestRoundPlan(hand, round) {
+  const req = ROUND_REQUIREMENTS[round];
+  const setCandidates = buildCandidateMelds(hand, "set");
+  const runCandidates = buildCandidateMelds(hand, "run");
+  let best = null;
+
+  function evaluate(chosen) {
+    if (chosen.filter((m) => m.type === "set").length !== req.sets) return;
+    if (chosen.filter((m) => m.type === "run").length !== req.runs) return;
+
+    const setAnchors = chosen.filter((m) => m.type === "set").map((m) => m.anchor);
+    if (new Set(setAnchors).size !== setAnchors.length) return;
+
+    const runAnchors = chosen.filter((m) => m.type === "run").map((m) => m.anchor);
+    if (new Set(runAnchors).size !== runAnchors.length) return;
+
+    const usedIds = new Set(chosen.flatMap((m) => [...m.ids]));
+    const removedPoints = chosen.reduce((sum, m) => sum + m.points, 0);
+    const removedCount = usedIds.size;
+    const remainingCards = hand.length - removedCount;
+    if (round === 7 && remainingCards !== 0) return;
+
+    const score = removedPoints * 3 + removedCount * 2 - remainingCards + Math.random() * 0.5;
+    if (!best || score > best.score) {
+      best = {
+        score,
+        melds: chosen.map((m) => ({ type: m.type, cards: [...m.cards] })),
+        usedIds
+      };
+    }
+  }
+
+  function chooseRuns(start, neededRuns, chosen) {
+    if (neededRuns === 0) {
+      evaluate(chosen);
+      return;
+    }
+    for (let i = start; i < runCandidates.length; i++) {
+      const c = runCandidates[i];
+      if (conflictWithChosen(c, chosen)) continue;
+      if (chosen.some((m) => m.type === "run" && m.anchor === c.anchor)) continue;
+      chosen.push(c);
+      chooseRuns(i + 1, neededRuns - 1, chosen);
+      chosen.pop();
+    }
+  }
+
+  function chooseSets(start, neededSets, chosen) {
+    if (neededSets === 0) {
+      chooseRuns(0, req.runs, chosen);
+      return;
+    }
+    for (let i = start; i < setCandidates.length; i++) {
+      const c = setCandidates[i];
+      if (conflictWithChosen(c, chosen)) continue;
+      if (chosen.some((m) => m.type === "set" && m.anchor === c.anchor)) continue;
+      chosen.push(c);
+      chooseSets(i + 1, neededSets - 1, chosen);
+      chosen.pop();
+    }
+  }
+
+  chooseSets(0, req.sets, []);
+  return best;
+}
+
+function cardKeepScore(hand, card) {
+  if (isWild(card)) return 100;
+
+  const others = hand.filter((c) => cardId(c) !== cardId(card));
+  const sameRank = others.filter((c) => !isWild(c) && c.rank === card.rank).length;
+  const wilds = others.filter(isWild).length;
+  const setNear = sameRank + wilds;
+
+  const sameSuit = others.filter((c) => !isWild(c) && c.suit === card.suit).map((c) => rankToValue(c.rank));
+  const rv = rankToValue(card.rank);
+  let runNear = 0;
+  for (const n of sameSuit) {
+    if (Math.abs(n - rv) <= 2) runNear++;
+  }
+  runNear += Math.min(wilds, 2);
+
+  return setNear * 3 + runNear * 2 - cardPoints(card) * 0.2;
+}
+
+function chooseDiscardCardAI(player) {
+  const ranked = [...player.hand]
+    .map((c) => ({ c, score: cardKeepScore(player.hand, c) + Math.random() * 0.2 }))
+    .sort((a, b) => a.score - b.score);
+  return ranked[0]?.c || null;
+}
+
+function layoffPotentialPoints(hand) {
+  let points = 0;
+  for (const c of hand) {
+    for (const m of state.tableMelds) {
+      const v = validateMeldByType(m.type, [...m.cards, c]);
+      if (v.ok) {
+        points += cardPoints(c);
+        break;
+      }
+    }
+  }
+  return points;
+}
+
+function handUtilityForCurrentRound(player, hand) {
+  if (player.hasMetRound) {
+    return layoffPotentialPoints(hand) - cardsPointsTotal(hand) * 0.15;
+  }
+  const plan = pickBestRoundPlan(hand, state.round);
+  if (!plan) return -cardsPointsTotal(hand) * 0.15;
+  const removedPoints = cardsPointsTotal([...plan.usedIds].map((id) => hand.find((c) => cardId(c) === id)).filter(Boolean));
+  return removedPoints - (hand.length - plan.usedIds.size) * 2;
+}
+
+function canSubmitRoundMelds(player, draftMelds, round) {
+  const req = ROUND_REQUIREMENTS[round];
+  const sets = draftMelds.filter((m) => m.type === "set");
+  const runs = draftMelds.filter((m) => m.type === "run");
+
+  if (sets.length !== req.sets || runs.length !== req.runs) {
+    return { ok: false, reason: `This round requires exactly ${req.sets} set(s) and ${req.runs} run(s).` };
+  }
+
+  const setRanks = [];
+  for (const m of sets) {
+    const v = validateSet(m.cards);
+    if (!v.ok) return { ok: false, reason: v.reason };
+    setRanks.push(v.rank);
+  }
+  if (new Set(setRanks).size !== setRanks.length) {
+    return { ok: false, reason: "Multiple sets in the same round cannot have the same number." };
+  }
+
+  const runSuits = [];
+  for (const m of runs) {
+    const v = validateRun(m.cards);
+    if (!v.ok) return { ok: false, reason: v.reason };
+    runSuits.push(v.suit);
+  }
+  if (new Set(runSuits).size !== runSuits.length) {
+    return { ok: false, reason: "Multiple runs in the same round cannot have the same suit." };
+  }
+
+  const usedIds = draftMelds.flatMap((m) => m.cards.map(cardId));
+  if (new Set(usedIds).size !== usedIds.length) {
+    return { ok: false, reason: "A card cannot be used in multiple melds." };
+  }
+
+  if (round === 7) {
+    const willRemove = new Set(usedIds);
+    const remaining = player.hand.filter((c) => !willRemove.has(cardId(c)));
+    if (remaining.length !== 0) {
+      return { ok: false, reason: "Round 7 requires hand size 0 when the 3 runs are accepted." };
+    }
+  }
+
+  return { ok: true };
+}
+
+function scoreHand(cards) {
+  return cards.reduce((sum, c) => sum + cardPoints(c), 0);
+}
+
+function roundEnd(winnerIndex) {
+  clearAiTimer();
+  const lobby = activeLobby();
+  const winner = state.players[winnerIndex];
+  addLog(`${winner.name} ended Round ${state.round}. Scoring remaining hands...`);
+
+  for (let i = 0; i < state.players.length; i++) {
+    const p = state.players[i];
+    if (i === winnerIndex) continue;
+    const pts = scoreHand(p.hand);
+    p.score += pts;
+    addLog(`${p.name} receives ${pts} point(s) from cards left in hand.`);
+  }
+
+  if (state.round === 7) {
+    state.gameOver = true;
+    state.phase = "gameOver";
+    if (lobby) {
+      lobby.phase = "completed";
+      lobby.round = 7;
+    }
+    const sorted = [...state.players].sort((a, b) => a.score - b.score);
+    const winnerText = sorted[0].name + " wins with " + sorted[0].score + " point(s).";
+    el("gameOverArea").style.display = "block";
+    el("gameOverArea").innerHTML = `<h2>Game Over</h2><p>${winnerText}</p>`;
+    addLog(winnerText);
+    renderAll();
+    return;
+  }
+
+  state.round += 1;
+  if (lobby) lobby.round = state.round;
+  rotateDealer();
+  startRound();
+}
+function startRound() {
+  clearAiTimer();
+  const lobby = activeLobby();
+  if (lobby) lobby.round = state.round;
+  state.tableMelds = [];
+  state.nextMeldId = 1;
+  state.draftMelds = [];
+  state.selectedCardIds.clear();
+
+  const dealCount = dealCountForRound(state.round);
+  const deckCount = state.players.length <= 5 ? 2 : 3;
+  state.drawPile = buildDeck(deckCount);
+  state.discardPile = [];
+
+  for (const p of state.players) {
+    p.hand = [];
+    p.melds = [];
+    p.hasMetRound = false;
+  }
+
+  for (let i = 0; i < dealCount; i++) {
+    for (const p of state.players) {
+      p.hand.push(state.drawPile.pop());
+    }
+  }
+
+  state.discardPile.push(state.drawPile.pop());
+  state.currentPlayer = nextIndex(state.dealerIndex);
+  state.phase = "offerDiscard";
+  state.discardBoughtBy = null;
+  state.buyingOrder = [];
+  state.buyingIndex = 0;
+  state.turnDiscardDecisionMade = false;
+  state.chatRoundCount = 0;
+  state.chatRecentTimestamps = [];
+
+  addLog(`Round ${state.round} started. Dealer: ${state.players[state.dealerIndex].name}. ${state.players[state.currentPlayer].name} begins.`);
+  renderAll();
+}
+
+function showHome() {
+  clearAiTimer();
+  el("homeArea").style.display = "block";
+  el("setupArea").style.display = "none";
+  el("scoreBar").style.display = "none";
+  el("gameArea").style.display = "none";
+  renderLobbyList();
+}
+
+function showSetup() {
+  el("homeArea").style.display = "none";
+  el("setupArea").style.display = "block";
+  el("scoreBar").style.display = "none";
+  el("gameArea").style.display = "none";
+}
+
+function showGame() {
+  el("homeArea").style.display = "none";
+  el("setupArea").style.display = "none";
+  el("scoreBar").style.display = "block";
+  el("gameArea").style.display = "grid";
+}
+
+function lobbyNames(lobby) {
+  return lobby.slots
+    .filter((s) => (s.type === "ai") || (s.type === "human" && s.occupied && s.name.trim()))
+    .map((s) => s.name.trim());
+}
+
+function lobbyPlayerCount(lobby) {
+  return lobbyNames(lobby).length;
+}
+
+function renderLobbyList() {
+  const wrap = el("lobbyList");
+  if (!wrap) return;
+  if (state.lobbies.length === 0) {
+    wrap.innerHTML = `<p class="tiny muted">No lobbies yet.</p>`;
+    return;
+  }
+
+  wrap.className = "lobby-list";
+  wrap.innerHTML = state.lobbies.map((lobby) => {
+    const phaseText = lobby.phase === "setup"
+      ? "Setup"
+      : (lobby.phase === "in_progress" ? `In Progress (Round ${lobby.round})` : "Completed");
+    const names = lobbyNames(lobby);
+    const emptyHumanSlots = lobby.slots
+      .map((s, idx) => ({ s, idx }))
+      .filter(({ s }) => s.type === "human" && !s.occupied);
+
+    const setupJoinButtons = lobby.phase === "setup"
+      ? emptyHumanSlots.map(({ idx }) => `<button data-action="join-seat" data-lobby="${lobby.id}" data-seat="${idx}">Join Seat ${idx + 1}</button>`).join("")
+      : "";
+
+    const spectatorButton = lobby.phase === "setup" || lobby.phase === "in_progress"
+      ? `<button data-action="spectate" data-lobby="${lobby.id}">Spectate</button>`
+      : "";
+
+    const ownerOpenButton = lobby.phase === "setup"
+      ? `<button class="secondary" data-action="open-setup" data-lobby="${lobby.id}">Open Setup</button>`
+      : "";
+
+    return `
+      <div class="lobby-item">
+        <div class="lobby-title">${lobby.name}</div>
+        <div class="lobby-meta">Phase: ${phaseText}</div>
+        <div class="lobby-meta">Players: ${lobbyPlayerCount(lobby)}/${lobby.maxPlayers}</div>
+        <div class="lobby-meta">Names: ${names.length ? names.join(", ") : "(none)"}</div>
+        <div class="row">
+          ${ownerOpenButton}
+          ${setupJoinButtons}
+          ${spectatorButton}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function adjustLobbySlotCount(lobby, count) {
+  const clamped = Math.max(2, Math.min(7, count));
+  if (clamped > lobby.slots.length) {
+    for (let i = lobby.slots.length; i < clamped; i++) {
+      lobby.slots.push({ name: "", type: "human", occupied: false, isOwner: false });
+    }
+  } else if (clamped < lobby.slots.length) {
+    lobby.slots = lobby.slots.slice(0, clamped);
+  }
+  lobby.maxPlayers = clamped;
+}
+
+function buildPlayerInputs() {
+  const lobby = activeLobby();
+  const wrap = el("playerInputs");
+  if (!lobby || !wrap) return;
+
+  const requested = Number(el("setupPlayerCount").value);
+  if (!Number.isNaN(requested) && requested >= 2 && requested <= 7 && state.session.role === "owner") {
+    adjustLobbySlotCount(lobby, requested);
+  } else {
+    el("setupPlayerCount").value = String(lobby.maxPlayers);
+  }
+
+  const canEdit = state.session.role === "owner";
+  wrap.innerHTML = "";
+  for (let i = 0; i < lobby.maxPlayers; i++) {
+    const slot = lobby.slots[i];
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.border = "1px solid var(--line)";
+    row.style.padding = "6px";
+    row.style.borderRadius = "8px";
+
+    const label = document.createElement("span");
+    label.textContent = `Seat ${i + 1}:`;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = `p${i + 1}`;
+    input.value = slot.name || "";
+    input.placeholder = slot.type === "human" ? "Empty human slot" : "AI name";
+    input.maxLength = 20;
+    input.disabled = !canEdit;
+
+    const mode = document.createElement("select");
+    mode.id = `ptype${i + 1}`;
+    mode.innerHTML = `
+      <option value="human" ${slot.type === "human" ? "selected" : ""}>Human</option>
+      <option value="ai" ${slot.type === "ai" ? "selected" : ""}>AI</option>
+    `;
+    mode.disabled = !canEdit;
+
+    const occ = document.createElement("span");
+    occ.className = "tiny muted";
+    occ.textContent = slot.type === "ai"
+      ? "AI active"
+      : (slot.occupied ? "Occupied" : "Open");
+
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(mode);
+    row.appendChild(occ);
+    wrap.appendChild(row);
+  }
+}
+
+function saveLobbySetupFromInputs() {
+  const lobby = activeLobby();
+  if (!lobby || state.session.role !== "owner") return;
+  for (let i = 0; i < lobby.maxPlayers; i++) {
+    const slot = lobby.slots[i];
+    const raw = (el(`p${i + 1}`)?.value || "").trim();
+    const type = (el(`ptype${i + 1}`)?.value || "human");
+    slot.type = type;
+    if (type === "ai") {
+      slot.occupied = true;
+      slot.name = raw || `AI ${i + 1}`;
+    } else {
+      if (slot.isOwner) {
+        slot.occupied = true;
+        slot.name = raw || state.session.name || `Owner`;
+      } else if (slot.occupied) {
+        slot.name = raw || slot.name || `Player ${i + 1}`;
+      } else {
+        slot.name = raw || "";
+      }
+    }
+  }
+}
+
+function createLobby() {
+  const ownerName = (el("ownerName").value || "").trim() || "Player 1";
+  const lobbyName = (el("newLobbyName").value || "").trim() || `Lobby ${state.nextLobbyId}`;
+  const count = Number(el("playerCount").value);
+  if (Number.isNaN(count) || count < 2 || count > 7) {
+    alert("Player count must be from 2 to 7.");
+    return;
+  }
+
+  const slots = [];
+  for (let i = 0; i < count; i++) {
+    if (i === 0) slots.push({ name: ownerName, type: "human", occupied: true, isOwner: true });
+    else slots.push({ name: "", type: "human", occupied: false, isOwner: false });
+  }
+
+  const lobby = {
+    id: state.nextLobbyId++,
+    name: lobbyName,
+    ownerName,
+    cardBackStyle: state.selectedCardBackStyle,
+    maxPlayers: count,
+    phase: "setup",
+    round: 1,
+    slots,
+    seatToPlayer: {},
+    spectators: []
+  };
+
+  state.lobbies.unshift(lobby);
+  state.activeLobbyId = lobby.id;
+  state.session = { name: ownerName, role: "owner", seatIndex: 0 };
+  enterSetupLobby();
+}
+
+function enterSetupLobby() {
+  const lobby = activeLobby();
+  if (!lobby) return;
+  el("setupLobbyTitle").textContent = `Lobby Setup: ${lobby.name}`;
+  el("setupPlayerCount").value = String(lobby.maxPlayers);
+  const ownerMode = state.session.role === "owner";
+  el("setupPlayerCount").disabled = !ownerMode;
+  el("buildPlayers").disabled = !ownerMode;
+  el("startGame").disabled = !ownerMode;
+  showSetup();
+  buildPlayerInputs();
+}
+
+function joinLobbySeat(lobbyId, seatIndex) {
+  const lobby = state.lobbies.find((l) => l.id === lobbyId);
+  if (!lobby || lobby.phase !== "setup") return;
+  const slot = lobby.slots[seatIndex];
+  if (!slot || slot.type !== "human" || slot.occupied) return;
+
+  const name = (prompt("Enter player name for this seat:", `Player ${seatIndex + 1}`) || "").trim();
+  if (!name) return;
+
+  slot.occupied = true;
+  slot.name = name;
+  state.activeLobbyId = lobbyId;
+  state.session = { name, role: "player", seatIndex };
+  enterSetupLobby();
+}
+
+function spectateLobby(lobbyId) {
+  const lobby = state.lobbies.find((l) => l.id === lobbyId);
+  if (!lobby) return;
+  const name = (prompt("Enter spectator name:", "Spectator") || "Spectator").trim() || "Spectator";
+  if (!lobby.spectators) lobby.spectators = [];
+  if (!lobby.spectators.includes(name)) lobby.spectators.push(name);
+  state.activeLobbyId = lobbyId;
+  state.session = { name, role: "spectator", seatIndex: -1 };
+  if (lobby.phase === "setup") {
+    enterSetupLobby();
+  } else if (lobby.phase === "in_progress") {
+    showGame();
+    renderAll();
+  }
+}
+
+function openSetupLobby(lobbyId) {
+  const lobby = state.lobbies.find((l) => l.id === lobbyId);
+  if (!lobby || lobby.phase !== "setup") return;
+  state.activeLobbyId = lobbyId;
+  if (state.session.name === lobby.ownerName) {
+    state.session = { name: lobby.ownerName, role: "owner", seatIndex: 0 };
+  } else {
+    state.session = { name: state.session.name || "Spectator", role: "spectator", seatIndex: -1 };
+  }
+  enterSetupLobby();
+}
+
+function handleLobbyListClick(e) {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const action = btn.getAttribute("data-action");
+  const lobbyId = Number(btn.getAttribute("data-lobby"));
+  if (!lobbyId) return;
+  if (action === "join-seat") {
+    const seat = Number(btn.getAttribute("data-seat"));
+    joinLobbySeat(lobbyId, seat);
+  } else if (action === "spectate") {
+    spectateLobby(lobbyId);
+  } else if (action === "open-setup") {
+    openSetupLobby(lobbyId);
+  }
+  renderLobbyList();
+}
+
+function startGame() {
+  clearAiTimer();
+  const lobby = activeLobby();
+  if (!lobby || lobby.phase !== "setup") return;
+  if (state.session.role !== "owner") {
+    alert("Only the lobby owner can start the game.");
+    return;
+  }
+
+  saveLobbySetupFromInputs();
+  const players = [];
+  lobby.seatToPlayer = {};
+  for (let i = 0; i < lobby.maxPlayers; i++) {
+    const slot = lobby.slots[i];
+    if (slot.type === "ai") {
+      lobby.seatToPlayer[i] = players.length;
+      players.push({
+        name: slot.name || `AI ${i + 1}`,
+        score: 0,
+        hand: [],
+        hasMetRound: false,
+        melds: [],
+        isAI: true
+      });
+      continue;
+    }
+    if (slot.occupied && slot.name.trim()) {
+      lobby.seatToPlayer[i] = players.length;
+      players.push({
+        name: slot.name.trim(),
+        score: 0,
+        hand: [],
+        hasMetRound: false,
+        melds: [],
+        isAI: false
+      });
+    }
+  }
+
+  if (players.length < 2 || players.length > 7) {
+    alert("Game requires 2 to 7 active players (occupied humans + AI).");
+    return;
+  }
+
+  state.players = players;
+  state.round = 1;
+  state.dealerIndex = Math.floor(Math.random() * players.length);
+  if (state.session.role === "spectator") {
+    state.viewerIndex = -1;
+  } else {
+    const mapped = lobby.seatToPlayer[state.session.seatIndex];
+    state.viewerIndex = mapped === undefined ? -1 : mapped;
+  }
+  if (state.viewerIndex < 0) {
+    state.viewerIndex = Math.max(0, players.findIndex((p) => !p.isAI));
+  }
+  state.gameOver = false;
+  state.phase = "setup";
+  state.log = [];
+  state.chatMessages = [];
+  state.chatRecentTimestamps = [];
+  state.chatRoundCount = 0;
+  lobby.phase = "in_progress";
+  lobby.round = 1;
+
+  el("gameOverArea").style.display = "none";
+  showGame();
+
+  addLog(`Game started in ${lobby.name} with ${players.length} players. Dealer chosen at random: ${players[state.dealerIndex].name}.`);
+  startRound();
+}
+
+function clearAiTimer() {
+  if (state.aiTimer) {
+    clearTimeout(state.aiTimer);
+    state.aiTimer = null;
+  }
+}
+
+function aiActorIndexForPhase() {
+  if (state.phase === "buying") return state.buyingOrder[state.buyingIndex];
+  if (["offerDiscard", "currentDraw", "mainAction"].includes(state.phase)) return state.currentPlayer;
+  return null;
+}
+
+function scheduleAiAction() {
+  if (state.gameOver) return;
+  if (state.aiTimer) return;
+  const actorIndex = aiActorIndexForPhase();
+  if (actorIndex === null || actorIndex === undefined) return;
+  const actor = state.players[actorIndex];
+  if (!actor?.isAI) return;
+  state.aiTimer = setTimeout(() => {
+    state.aiTimer = null;
+    runAiAction();
+  }, 450);
+}
+
+function runAiAction() {
+  if (state.gameOver) return;
+  const actorIndex = aiActorIndexForPhase();
+  if (actorIndex === null || actorIndex === undefined) return;
+  const actor = state.players[actorIndex];
+  if (!actor?.isAI) return;
+
+  if (state.phase === "offerDiscard") {
+    const topDiscard = state.discardPile[state.discardPile.length - 1];
+    const baseUtility = handUtilityForCurrentRound(actor, actor.hand);
+    const withDiscardUtility = topDiscard ? handUtilityForCurrentRound(actor, [...actor.hand, topDiscard]) : baseUtility;
+    const utilityDelta = withDiscardUtility - baseUtility;
+    const shouldTake = utilityDelta > 2 || randomChance(0.12 + Math.min(0.45, Math.max(0, utilityDelta / 10)));
+    offerDiscardDecision(shouldTake);
+    return;
+  }
+
+  if (state.phase === "buying") {
+    const topDiscard = state.discardPile[state.discardPile.length - 1];
+    const baseUtility = handUtilityForCurrentRound(actor, actor.hand);
+    const withDiscardPenalty = topDiscard ? handUtilityForCurrentRound(actor, [...actor.hand, topDiscard]) - 8 : baseUtility - 8;
+    const utilityDelta = withDiscardPenalty - baseUtility;
+    const shouldBuy = utilityDelta > 3 || randomChance(0.06 + Math.min(0.35, Math.max(0, utilityDelta / 12)));
+    buyerDecision(shouldBuy);
+    return;
+  }
+
+  if (state.phase === "currentDraw") {
+    const topDiscard = state.discardPile[state.discardPile.length - 1];
+    const baseUtility = handUtilityForCurrentRound(actor, actor.hand);
+    const withDiscard = topDiscard ? handUtilityForCurrentRound(actor, [...actor.hand, topDiscard]) : baseUtility;
+    const utilityDelta = withDiscard - baseUtility;
+    if (topDiscard && (utilityDelta > 1 || randomChance(0.2 + Math.min(0.45, Math.max(0, utilityDelta / 10))))) {
+      currentDraw("discard");
+    } else {
+      currentDraw("deck");
+    }
+    return;
+  }
+
+  if (state.phase === "mainAction") {
+    aiMainAction(actor);
+  }
+}
+
+function aiMainAction(player) {
+  if (!player.hasMetRound) {
+    const plan = pickBestRoundPlan(player.hand, state.round);
+    if (plan) {
+      state.draftMelds = plan.melds.map((m) => ({ type: m.type, cards: [...m.cards] }));
+      submitRoundMelds();
+      if (state.phase !== "mainAction") return;
+    }
+  }
+
+  if (player.hasMetRound) {
+    let changed = true;
+    let safety = 0;
+    while (changed && safety < 50) {
+      changed = false;
+      safety += 1;
+      const byPoints = [...player.hand].sort((a, b) => cardPoints(b) - cardPoints(a));
+      for (const c of byPoints) {
+        let bestMeld = null;
+        for (const m of state.tableMelds) {
+          const v = validateMeldByType(m.type, [...m.cards, c]);
+          if (v.ok) {
+            bestMeld = m;
+            break;
+          }
+        }
+        if (bestMeld && randomChance(0.88)) {
+          bestMeld.cards.push(c);
+          removeCardsFromHand(player, [c]);
+          addLog(`${player.name} laid off ${cardLabel(c)} to Meld #${bestMeld.id}.`);
+          changed = true;
+          if (player.hand.length === 0) {
+            roundEnd(state.currentPlayer);
+            return;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  const discard = chooseDiscardCardAI(player);
+  if (!discard) return;
+  state.selectedCardIds.clear();
+  state.selectedCardIds.add(cardId(discard));
+  discardSelected();
+}
+
+function offerDiscardDecision(take) {
+  const p = currentPlayerObj();
+  if (state.phase !== "offerDiscard") return;
+  state.turnDiscardDecisionMade = true;
+
+  if (take) {
+    p.hand.push(state.discardPile.pop());
+    state.phase = "mainAction";
+    addLog(`${p.name} picked up from discard pile.`);
+  } else {
+    state.phase = "buying";
+    state.discardBoughtBy = null;
+    state.buyingOrder = [];
+    let idx = nextIndex(state.currentPlayer);
+    while (idx !== state.currentPlayer) {
+      state.buyingOrder.push(idx);
+      idx = nextIndex(idx);
+    }
+    state.buyingIndex = 0;
+    addLog(`${p.name} declined discard. Buying phase begins.`);
+  }
+
+  renderAll();
+}
+
+function buyerDecision(buy) {
+  if (state.phase !== "buying") return;
+  if (!state.turnDiscardDecisionMade) return;
+  const buyerIdx = state.buyingOrder[state.buyingIndex];
+  const buyer = state.players[buyerIdx];
+  const topDiscard = state.discardPile[state.discardPile.length - 1];
+
+  if (buy) {
+    buyer.hand.push(state.discardPile.pop());
+    const penalty = drawOne();
+    if (penalty) buyer.hand.push(penalty);
+
+    state.discardBoughtBy = buyerIdx;
+    state.phase = "currentDraw";
+
+    const penaltyText = penalty ? ` and penalty ${cardLabel(penalty)}` : "";
+    addLog(`${buyer.name} bought ${cardLabel(topDiscard)}${penaltyText}.`);
+  } else {
+    addLog(`${buyer.name} passed on buying ${cardLabel(topDiscard)}.`);
+    state.buyingIndex += 1;
+    if (state.buyingIndex >= state.buyingOrder.length) {
+      state.phase = "currentDraw";
+      addLog("No one bought the discard card.");
+    }
+  }
+
+  renderAll();
+}
+
+function currentDraw(source) {
+  if (state.phase !== "currentDraw") return;
+  const p = currentPlayerObj();
+  let card = null;
+  if (source === "discard") {
+    if (state.discardPile.length === 0) return;
+    card = state.discardPile.pop();
+  } else {
+    card = drawOne();
+  }
+
+  if (!card) {
+    addLog(`${p.name} could not draw a card (no cards available).`);
+  } else {
+    p.hand.push(card);
+    addLog(`${p.name} drew ${cardLabel(card)} from ${source === "discard" ? "discard" : "draw"} pile.`);
+  }
+  state.phase = "mainAction";
+  renderAll();
+}
+
+function addDraftMeld(type) {
+  const p = currentPlayerObj();
+  if (state.phase !== "mainAction" || p.hasMetRound) return;
+
+  const cards = selectedCardsFromHand();
+  if (cards.length === 0) {
+    alert("Select cards from hand first.");
+    return;
+  }
+
+  const draftUsed = new Set(state.draftMelds.flatMap((m) => m.cards.map(cardId)));
+  if (cards.some((c) => draftUsed.has(cardId(c)))) {
+    alert("Some selected cards are already in another draft meld.");
+    return;
+  }
+
+  const validation = validateMeldByType(type, cards);
+  if (!validation.ok) {
+    alert(validation.reason);
+    return;
+  }
+
+  state.draftMelds.push({ type, cards: [...cards] });
+  for (const c of cards) state.selectedCardIds.delete(cardId(c));
+  renderAll();
+}
+
+function removeDraftMeld(index) {
+  state.draftMelds.splice(index, 1);
+  renderAll();
+}
+
+function submitRoundMelds() {
+  const p = currentPlayerObj();
+  if (state.phase !== "mainAction" || p.hasMetRound) return;
+
+  const check = canSubmitRoundMelds(p, state.draftMelds, state.round);
+  if (!check.ok) {
+    alert(check.reason);
+    return;
+  }
+
+  for (const draft of state.draftMelds) {
+    const meld = {
+      id: state.nextMeldId++,
+      ownerIndex: state.currentPlayer,
+      type: draft.type,
+      cards: [...draft.cards]
+    };
+    state.tableMelds.push(meld);
+    p.melds.push(meld.id);
+    removeCardsFromHand(p, draft.cards);
+  }
+
+  p.hasMetRound = true;
+  state.draftMelds = [];
+  state.selectedCardIds.clear();
+
+  addLog(`${p.name} successfully met Round ${state.round} requirements.`);
+
+  if (p.hand.length === 0) {
+    roundEnd(state.currentPlayer);
+    return;
+  }
+
+  renderAll();
+}
+
+function layOffToMeld() {
+  const p = currentPlayerObj();
+  if (state.phase !== "mainAction" || !p.hasMetRound) return;
+
+  const targetId = Number(el("targetMeld")?.value);
+  if (!targetId) {
+    alert("Choose a target meld first.");
+    return;
+  }
+
+  const cards = selectedCardsFromHand();
+  if (cards.length === 0) {
+    alert("Select card(s) to lay off.");
+    return;
+  }
+
+  const meld = state.tableMelds.find((m) => m.id === targetId);
+  if (!meld) {
+    alert("Target meld not found.");
+    return;
+  }
+
+  const combined = [...meld.cards, ...cards];
+  const v = validateMeldByType(meld.type, combined);
+  if (!v.ok) {
+    alert(`Cannot lay off: ${v.reason}`);
+    return;
+  }
+
+  meld.cards = combined;
+  removeCardsFromHand(p, cards);
+  state.selectedCardIds.clear();
+  addLog(`${p.name} laid off ${cards.map(cardLabel).join(", ")} to Meld #${meld.id}.`);
+
+  if (p.hand.length === 0) {
+    roundEnd(state.currentPlayer);
+    return;
+  }
+
+  renderAll();
+}
+
+function discardSelected() {
+  const p = currentPlayerObj();
+  if (state.phase !== "mainAction") return;
+
+  const cards = selectedCardsFromHand();
+  if (cards.length !== 1) {
+    alert("Select exactly one card to discard.");
+    return;
+  }
+  const c = cards[0];
+
+  removeCardsFromHand(p, [c]);
+  state.discardPile.push(c);
+  state.selectedCardIds.clear();
+  state.draftMelds = [];
+
+  addLog(`${p.name} discarded ${cardLabel(c)}.`);
+
+  if (p.hand.length === 0) {
+    roundEnd(state.currentPlayer);
+    return;
+  }
+
+  state.currentPlayer = nextIndex(state.currentPlayer);
+  state.phase = "offerDiscard";
+  state.discardBoughtBy = null;
+  state.buyingOrder = [];
+  state.buyingIndex = 0;
+  state.turnDiscardDecisionMade = false;
+  addLog(`Turn passes to ${currentPlayerObj().name}.`);
+  renderAll();
+}
+
+function sortHand(by) {
+  const p = viewerPlayerObj();
+  if (!p) return;
+  if (by === "rank") {
+    p.hand.sort((a, b) => {
+      const rv = rankToValue(a.rank) - rankToValue(b.rank);
+      return rv !== 0 ? rv : a.suit.localeCompare(b.suit);
+    });
+  } else {
+    p.hand.sort((a, b) => {
+      const sv = a.suit.localeCompare(b.suit);
+      return sv !== 0 ? sv : rankToValue(a.rank) - rankToValue(b.rank);
+    });
+  }
+  renderHand();
+}
+
+function renderStatus() {
+  const req = ROUND_REQUIREMENTS[state.round];
+  el("status").innerHTML = `
+    <div class="round-banner">
+      Round ${state.round}/7 | Requirement: ${req.sets} set(s), ${req.runs} run(s)
+    </div>
+  `;
+}
+
+function renderPlayersBoard() {
+  const root = el("playersBoard");
+  root.innerHTML = state.players.map((p, idx) => {
+    const isDealer = idx === state.dealerIndex;
+    const isCurrent = idx === state.currentPlayer;
+    const isYou = idx === state.viewerIndex;
+    const css = `${isYou ? "you" : ""} ${isCurrent ? "current" : ""}`.trim();
+    const icons = [
+      isDealer ? `<span class="player-icon">D</span>` : "",
+      isCurrent ? `<span class="player-icon">Turn</span>` : ""
+    ].join("");
+    return `
+      <div class="player-figure ${css}">
+        <div class="player-icons">${icons}</div>
+        <div class="figure-head"></div>
+        <div class="figure-body"></div>
+        <div class="figure-legs"><span></span><span></span></div>
+        <div class="player-name">${p.name}${isYou ? " (You)" : ""}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderPiles() {
+  const lobby = activeLobby();
+  const backStyle = lobby?.cardBackStyle || 1;
+  const topDiscard = state.discardPile[state.discardPile.length - 1];
+  const topId = topDiscard ? cardId(topDiscard) : null;
+  const isNewDiscard = !!topDiscard && state.lastDiscardRenderId && state.lastDiscardRenderId !== topId;
+  state.lastDiscardRenderId = topId;
+  el("pileArea").innerHTML = `
+    <div class="pile-box">
+      <div class="pile-title">Draw Pile (${state.drawPile.length})</div>
+      <div class="card-back back-style-${backStyle}"></div>
+    </div>
+    <div class="pile-box">
+      <div class="pile-title">Current Discard</div>
+      ${topDiscard ? renderCardModel(topDiscard, { extraClass: isNewDiscard ? "discard-changed" : "" }) : `<div class="tiny muted">(empty)</div>`}
+    </div>
+  `;
+}
+
+function renderTurnControls() {
+  const p = currentPlayerObj();
+  const topDiscard = state.discardPile[state.discardPile.length - 1];
+  const root = el("turnControls");
+  if (!p) {
+    root.innerHTML = "";
+    return;
+  }
+
+  if (state.phase === "offerDiscard") {
+    if (p.isAI) {
+      root.innerHTML = `<p class="tiny">${p.name} (AI) is deciding whether to take discard...</p>`;
+      return;
+    }
+    root.innerHTML = `
+      <p class="tiny">${p.name}: pick up ${topDiscard ? cardLabel(topDiscard) : "(none)"} from discard?</p>
+      <div class="row">
+        <button class="ok" id="takeDiscardBtn">Take Discard</button>
+        <button id="declineDiscardBtn">Decline (Go to Buying)</button>
+      </div>
+    `;
+    el("takeDiscardBtn").onclick = () => offerDiscardDecision(true);
+    el("declineDiscardBtn").onclick = () => offerDiscardDecision(false);
+    return;
+  }
+
+  if (state.phase === "buying") {
+    const buyerIdx = state.buyingOrder[state.buyingIndex];
+    const buyer = state.players[buyerIdx];
+    if (buyer?.isAI) {
+      root.innerHTML = `<p class="tiny">Buying phase: ${buyer.name} (AI) is deciding...</p>`;
+      return;
+    }
+    root.innerHTML = `
+      <p class="tiny">Buying phase: ${buyer.name}, buy ${cardLabel(topDiscard)} and take a penalty draw card?</p>
+      <div class="row">
+        <button class="ok" id="buyBtn">Buy</button>
+        <button id="passBuyBtn">Pass</button>
+      </div>
+    `;
+    el("buyBtn").onclick = () => buyerDecision(true);
+    el("passBuyBtn").onclick = () => buyerDecision(false);
+    return;
+  }
+
+  if (state.phase === "currentDraw") {
+    if (p.isAI) {
+      root.innerHTML = `<p class="tiny">${p.name} (AI) is choosing a draw source...</p>`;
+      return;
+    }
+    const canTakeDiscard = state.discardPile.length > 0;
+    root.innerHTML = `
+      <p class="tiny">${p.name}: draw your card.</p>
+      <div class="row">
+        <button class="secondary" id="drawDeckBtn">Draw from Deck</button>
+        <button id="drawDiscardBtn" ${canTakeDiscard ? "" : "disabled"}>Take Discard</button>
+      </div>
+    `;
+    el("drawDeckBtn").onclick = () => currentDraw("deck");
+    el("drawDiscardBtn").onclick = () => currentDraw("discard");
+    return;
+  }
+
+  if (state.phase === "mainAction") {
+    root.innerHTML = p.isAI
+      ? `<p class="tiny">${p.name} (AI) is playing their turn...</p>`
+      : `<p class="tiny">${p.name}: build melds, lay off (if already down), then discard one card to end turn.</p>`;
+    return;
+  }
+
+  root.innerHTML = "";
+}
+
+function renderScores() {
+  const playerRows = state.players
+    .map((p, i) => {
+      const marker = i === state.currentPlayer ? " <strong>(turn)</strong>" : "";
+      const typeTag = p.isAI ? " <span class=\"tiny muted\">AI</span>" : "";
+      return `<div class="score-chip"><span class="pill">${p.name}</span>${typeTag} ${p.score} point(s)${marker}</div>`;
+    })
+    .join("");
+  const lobby = activeLobby();
+  const spectators = lobby?.spectators || [];
+  const spectatorText = spectators.length ? spectators.join(", ") : "(none)";
+  el("scores").innerHTML = `
+    <div class="scores-row">${playerRows}</div>
+    <div class="spectators-row"><span class="pill">Spectators</span> ${spectatorText}</div>
+  `;
+}
+
+function renderHand() {
+  const p = viewerPlayerObj();
+  const current = currentPlayerObj();
+  const root = el("hand");
+  root.innerHTML = "";
+  if (!p) return;
+  const canInteract = !!current && state.currentPlayer === state.viewerIndex && !current.isAI && state.phase === "mainAction";
+
+  for (const c of p.hand) {
+    const cardNode = document.createElement("div");
+    cardNode.innerHTML = renderCardModel(c, {
+      selectable: true,
+      checked: state.selectedCardIds.has(cardId(c)),
+      disabled: !canInteract
+    });
+    root.appendChild(cardNode.firstElementChild);
+  }
+
+  root.querySelectorAll("input[type='checkbox']").forEach((cb) => {
+    cb.addEventListener("change", (e) => {
+      const id = e.target.getAttribute("data-id");
+      if (e.target.checked) state.selectedCardIds.add(id);
+      else state.selectedCardIds.delete(id);
+    });
+  });
+
+  renderHandActions();
+}
+
+function renderHandActions() {
+  const p = currentPlayerObj();
+  const viewer = viewerPlayerObj();
+  const root = el("handActions");
+  if (!p || state.phase !== "mainAction") {
+    root.innerHTML = "<p class='muted tiny'>Hand actions unlock during main action phase.</p>";
+    return;
+  }
+  if (!viewer) {
+    root.innerHTML = "<p class='muted tiny'>No viewer hand configured.</p>";
+    return;
+  }
+  if (state.currentPlayer !== state.viewerIndex) {
+    root.innerHTML = "<p class='muted tiny'>Your hand is visible, but actions unlock only on your turn.</p>";
+    return;
+  }
+  if (p.isAI) {
+    root.innerHTML = "<p class='muted tiny'>AI controls this hand automatically.</p>";
+    return;
+  }
+
+  if (!p.hasMetRound) {
+    root.innerHTML = `
+      <div class="row">
+        <button id="makeSet" class="secondary">Create Set from Selected</button>
+        <button id="makeRun" class="secondary">Create Run from Selected</button>
+        <button id="submitMelds" class="ok">Submit Round Requirements</button>
+      </div>
+      <p class="tiny muted">After meeting round requirements, you can discard to end turn.</p>
+      <div class="row" style="margin-top:6px;">
+        <button id="discardBtn" class="warn">Discard Selected Card</button>
+      </div>
+    `;
+    el("makeSet").onclick = () => addDraftMeld("set");
+    el("makeRun").onclick = () => addDraftMeld("run");
+    el("submitMelds").onclick = submitRoundMelds;
+    el("discardBtn").onclick = discardSelected;
+    return;
+  }
+
+  const meldOptions = state.tableMelds
+    .map((m) => `<option value="${m.id}">#${m.id} ${m.type.toUpperCase()} (${state.players[m.ownerIndex].name})</option>`)
+    .join("");
+
+  root.innerHTML = `
+    <div class="row">
+      <select id="targetMeld">
+        <option value="">Select meld...</option>
+        ${meldOptions}
+      </select>
+      <button id="layOffBtn" class="secondary">Lay Off Selected Cards</button>
+      <button id="discardBtn" class="warn">Discard Selected Card</button>
+    </div>
+    <p class="tiny muted">You may lay off cards to your melds or other players' accepted melds.</p>
+  `;
+
+  el("layOffBtn").onclick = layOffToMeld;
+  el("discardBtn").onclick = discardSelected;
+}
+
+function renderDraftMelds() {
+  const root = el("draftMelds");
+  if (state.draftMelds.length === 0) {
+    root.innerHTML = "<p class='tiny muted'>No draft melds yet.</p>";
+    return;
+  }
+
+  root.innerHTML = state.draftMelds.map((m, i) => `
+    <div class="draft-item">
+      <div><strong>${m.type.toUpperCase()}</strong></div>
+      <div class="meld-cards">${m.cards.map((c) => renderCardModel(c)).join("")}</div>
+      <button data-idx="${i}" class="tiny">Remove</button>
+    </div>
+  `).join("");
+
+  root.querySelectorAll("button[data-idx]").forEach((btn) => {
+    btn.onclick = () => removeDraftMeld(Number(btn.getAttribute("data-idx")));
+  });
+}
+
+function renderTableMelds() {
+  const root = el("tableMelds");
+  if (state.tableMelds.length === 0) {
+    root.innerHTML = "<p class='tiny muted'>No melds on table yet.</p>";
+    return;
+  }
+
+  root.innerHTML = state.tableMelds.map((m) => `
+    <div class="meld-item">
+      <div><strong>#${m.id} ${m.type.toUpperCase()}</strong> - Owner: ${state.players[m.ownerIndex].name}</div>
+      <div class="meld-cards">${m.cards.map((c) => renderCardModel(c)).join("")}</div>
+    </div>
+  `).join("");
+}
+
+function renderLog() {
+  el("log").innerHTML = state.log.map((entry) => `<p>${entry}</p>`).join("");
+}
+
+function renderChat() {
+  const feed = el("chatFeed");
+  if (!feed) return;
+  const msgs = state.chatMessages.filter((m) => m.round === state.round);
+  feed.innerHTML = msgs.length
+    ? msgs.map((m) => `<p><strong>${m.sender}:</strong> ${m.text}</p>`).join("")
+    : "<p class='tiny muted'>No chat messages this round.</p>";
+
+  const meta = el("chatMeta");
+  if (meta) {
+    const used = state.chatRoundCount;
+    const remainingRound = Math.max(0, 100 - used);
+    meta.textContent = `Round chat: ${used}/100 used (${remainingRound} remaining). Rate limit: 5 messages per 10 seconds.`;
+  }
+}
+
+function renderAll() {
+  renderStatus();
+  renderPlayersBoard();
+  renderPiles();
+  renderTurnControls();
+  renderScores();
+  renderHand();
+  renderDraftMelds();
+  renderTableMelds();
+  renderLog();
+  renderChat();
+  scheduleAiAction();
+}
+
+function handleSendChat() {
+  const input = el("chatInput");
+  if (!input) return;
+  const result = addChatMessage(input.value);
+  if (!result.ok) {
+    alert(result.reason);
+    return;
+  }
+  input.value = "";
+  renderChat();
+}
+
+el("createLobby").addEventListener("click", () => {
+  createLobby();
+  renderLobbyList();
+});
+el("cardBackPicker").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-back]");
+  if (!btn) return;
+  setCardBackChoice(Number(btn.getAttribute("data-back")));
+});
+el("lobbyList").addEventListener("click", handleLobbyListClick);
+el("buildPlayers").addEventListener("click", buildPlayerInputs);
+el("setupPlayerCount").addEventListener("change", buildPlayerInputs);
+el("startGame").addEventListener("click", () => {
+  startGame();
+  renderLobbyList();
+});
+el("backToLobbies").addEventListener("click", showHome);
+el("returnToLobbies").addEventListener("click", showHome);
+el("sortRank").addEventListener("click", () => sortHand("rank"));
+el("sortSuit").addEventListener("click", () => sortHand("suit"));
+el("sendChat").addEventListener("click", handleSendChat);
+el("chatInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    handleSendChat();
+  }
+});
+
+showHome();
+renderCardBackPicker();

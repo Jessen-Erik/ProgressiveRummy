@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Progressive Rummy</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Progressive Rummy</h1>
+      <div id="homeArea">
+        <h2>Create Lobby</h2>
+        <div class="row">
+          <label for="ownerName">Your Name:</label>
+          <input id="ownerName" type="text" value="Player 1" />
+          <label for="newLobbyName">Lobby Name:</label>
+          <input id="newLobbyName" type="text" value="My Lobby" />
+          <label for="playerCount">Players (2-7):</label>
+          <input id="playerCount" type="number" min="2" max="7" value="4" />
+          <button id="createLobby" class="primary">Create Lobby</button>
+        </div>
+        <div class="row" style="margin-top:8px; align-items:flex-start;">
+          <span class="tiny muted">Card Back:</span>
+          <div id="cardBackPicker" class="card-back-picker"></div>
+        </div>
+        <h2 style="margin-top:10px;">Lobbies</h2>
+        <div id="lobbyList"></div>
+      </div>
+
+      <div id="setupArea" style="display:none;">
+        <div class="row">
+          <strong id="setupLobbyTitle">Lobby Setup</strong>
+        </div>
+        <div class="row">
+          <label for="playerCount">Players (2-7):</label>
+          <input id="setupPlayerCount" type="number" min="2" max="7" value="4" />
+          <button id="buildPlayers">Refresh Slots</button>
+        </div>
+        <div id="playerInputs" class="row" style="margin-top: 8px;"></div>
+        <div class="row" style="margin-top: 8px;">
+          <button id="startGame" class="primary">Start Game</button>
+          <button id="backToLobbies">Back To Lobbies</button>
+        </div>
+      </div>
+      <div id="gameOverArea" style="display:none;"></div>
+    </div>
+
+    <div id="scoreBar" class="card score-bar" style="display:none;">
+      <div class="row" style="justify-content: space-between;">
+        <h2>Scores</h2>
+        <button id="returnToLobbies">Back To Lobbies</button>
+      </div>
+      <div id="scores"></div>
+    </div>
+
+    <div id="gameArea" style="display:none;" class="grid">
+      <div class="card">
+        <h2>Round & Turn</h2>
+        <div id="status" class="status"></div>
+        <div id="playersBoard" class="players-board"></div>
+        <div id="pileArea" class="pile-area"></div>
+        <div id="turnControls" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Your Hand</h2>
+        <div class="row">
+          <button id="sortRank">Sort by Rank</button>
+          <button id="sortSuit">Sort by Suit</button>
+        </div>
+        <div id="hand" class="cards"></div>
+        <div id="handActions" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Melds</h2>
+        <div class="split">
+          <div>
+            <h3>Draft Melds (this turn)</h3>
+            <div id="draftMelds"></div>
+          </div>
+          <div>
+            <h3>Table Melds</h3>
+            <div id="tableMelds"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Log</h2>
+        <div id="log" class="log"></div>
+        <h3 style="margin-top:8px;">Chat</h3>
+        <div id="chatFeed" class="log chat-feed"></div>
+        <div class="row" style="margin-top:8px;">
+          <input id="chatInput" type="text" maxlength="200" placeholder="Type message (max 200 chars)" style="flex:1;" />
+          <button id="sendChat" class="secondary">Send</button>
+        </div>
+        <div id="chatMeta" class="tiny muted"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
