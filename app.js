@@ -785,7 +785,7 @@ function renderLobbyList() {
   wrap.className = "lobby-list";
   wrap.innerHTML = state.lobbies.map((lobby) => {
     const phaseText = lobby.phase === "setup"
-      ? "Setup"
+      ? "In Progress (Setup)"
       : (lobby.phase === "in_progress" ? `In Progress (Round ${lobby.round})` : "Completed");
     const names = lobbyNames(lobby);
     const emptyHumanSlots = Array.isArray(lobby.setupOpenSeats)
