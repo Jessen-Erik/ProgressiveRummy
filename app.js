@@ -12,6 +12,29 @@ const ROUND_REQUIREMENTS = {
   7: { sets: 0, runs: 3 }
 };
 
+const EVENTS = {
+  SESSION_HELLO: "session:hello",
+  SESSION_ACK: "session:ack",
+  LOBBY_CREATE: "lobby:create",
+  LOBBY_LIST: "lobby:list",
+  LOBBY_LIST_UPDATE: "lobby:list:update",
+  LOBBY_OPEN_SETUP: "lobby:open-setup",
+  LOBBY_JOIN_SEAT: "lobby:join-seat",
+  LOBBY_SPECTATE: "lobby:spectate",
+  LOBBY_UPDATE_SETUP: "lobby:update-setup",
+  LOBBY_SNAPSHOT: "lobby:snapshot",
+  GAME_START: "game:start",
+  GAME_ACTION: "game:action",
+  GAME_SNAPSHOT: "game:snapshot",
+  CHAT_SEND: "chat:send",
+  CHAT_UPDATE: "chat:update",
+  ERROR: "error:server"
+};
+
+const GAME_ACTIONS = {
+  SYNC_STATE: "sync_state"
+};
+
 const state = {
   lobbies: [],
   nextLobbyId: 1,
@@ -39,7 +62,10 @@ const state = {
   turnDiscardDecisionMade: false,
   chatMessages: [],
   chatRecentTimestamps: [],
-  chatRoundCount: 0
+  chatRoundCount: 0,
+  socket: null,
+  sessionId: null,
+  isApplyingServerState: false
 };
 state.selectedCardBackStyle = 1;
 
@@ -47,6 +73,105 @@ const el = (id) => document.getElementById(id);
 
 function activeLobby() {
   return state.lobbies.find((l) => l.id === state.activeLobbyId) || null;
+}
+
+function upsertLobbyFromSnapshot(snapshot) {
+  const idx = state.lobbies.findIndex((l) => l.id === snapshot.id);
+  if (idx >= 0) state.lobbies[idx] = { ...state.lobbies[idx], ...snapshot };
+  else state.lobbies.unshift({ ...snapshot });
+}
+
+function applyGameStateSnapshot(gameState) {
+  if (!gameState) return;
+  state.isApplyingServerState = true;
+  state.round = gameState.round;
+  state.dealerIndex = gameState.dealerIndex;
+  state.currentPlayer = gameState.currentPlayer;
+  state.phase = gameState.phase;
+  state.drawPile = gameState.drawPile || [];
+  state.discardPile = gameState.discardPile || [];
+  state.tableMelds = gameState.tableMelds || [];
+  state.nextMeldId = gameState.nextMeldId || 1;
+  state.draftMelds = gameState.draftMelds || [];
+  state.buyingOrder = gameState.buyingOrder || [];
+  state.buyingIndex = gameState.buyingIndex || 0;
+  state.discardBoughtBy = gameState.discardBoughtBy ?? null;
+  state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
+  state.players = gameState.players || [];
+
+  const lobby = activeLobby();
+  if (state.session.role === "spectator") {
+    state.viewerIndex = Math.max(0, state.players.findIndex((p) => !p.isAI));
+  } else if (lobby && lobby.seatToPlayer && state.session.seatIndex >= 0) {
+    const mapped = lobby.seatToPlayer[state.session.seatIndex];
+    if (mapped !== undefined) state.viewerIndex = mapped;
+  }
+  renderAll();
+  state.isApplyingServerState = false;
+}
+
+function applyLobbySnapshot(snapshot) {
+  upsertLobbyFromSnapshot(snapshot);
+  state.activeLobbyId = snapshot.id;
+  if (snapshot.sessionRole) state.session.role = snapshot.sessionRole;
+  if (snapshot.chat) {
+    state.chatMessages = snapshot.chat.messages || [];
+    state.chatRoundCount = snapshot.chat.byRoundCount || 0;
+  }
+  if (snapshot.phase === "setup") {
+    enterSetupLobby();
+  } else if (snapshot.phase === "in_progress") {
+    showGame();
+    if (snapshot.gameState) applyGameStateSnapshot(snapshot.gameState);
+  }
+  renderLobbyList();
+}
+
+function connectSocketIfAvailable() {
+  if (state.socket || typeof window.io !== "function") return;
+  const socket = window.io({ transports: ["websocket"] });
+  state.socket = socket;
+
+  socket.on("connect", () => {
+    socket.emit(EVENTS.SESSION_HELLO, { name: state.session.name || "Player" });
+    socket.emit(EVENTS.LOBBY_LIST);
+  });
+
+  socket.on(EVENTS.SESSION_ACK, (payload) => {
+    state.sessionId = payload.sessionId;
+    if (payload.name) state.session.name = payload.name;
+  });
+
+  socket.on(EVENTS.LOBBY_LIST_UPDATE, (list) => {
+    state.lobbies = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+    renderLobbyList();
+  });
+
+  socket.on(EVENTS.LOBBY_SNAPSHOT, (snapshot) => {
+    if (!snapshot?.id) return;
+    applyLobbySnapshot(snapshot);
+  });
+
+  socket.on(EVENTS.GAME_SNAPSHOT, (gameState) => {
+    if (gameState) applyGameStateSnapshot(gameState);
+  });
+
+  socket.on(EVENTS.CHAT_UPDATE, (chat) => {
+    if (!chat) return;
+    state.chatMessages = chat.messages || [];
+    state.chatRoundCount = chat.byRoundCount || 0;
+    renderChat();
+  });
+
+  socket.on(EVENTS.ERROR, (payload) => {
+    if (payload?.message) alert(payload.message);
+  });
+}
+
+function emitSocket(eventName, payload) {
+  if (!state.socket) return false;
+  state.socket.emit(eventName, payload);
+  return true;
 }
 
 function chatSenderName() {
@@ -59,25 +184,19 @@ function addChatMessage(text) {
   const trimmed = (text || "").trim();
   if (!trimmed) return { ok: false, reason: "Message cannot be empty." };
   if (trimmed.length > 200) return { ok: false, reason: "Message exceeds 200 characters." };
-  if (state.phase === "setup" || state.phase === "gameOver") return { ok: false, reason: "Chat is available during active rounds only." };
+  const lobby = activeLobby();
+  if (emitSocket(EVENTS.CHAT_SEND, { lobbyId: lobby?.id, text: trimmed })) {
+    return { ok: true };
+  }
 
+  if (state.phase === "setup" || state.phase === "gameOver") return { ok: false, reason: "Chat is available during active rounds only." };
   const now = Date.now();
   state.chatRecentTimestamps = state.chatRecentTimestamps.filter((t) => now - t < 10000);
-  if (state.chatRecentTimestamps.length >= 5) {
-    return { ok: false, reason: "Rate limit: max 5 messages per 10 seconds." };
-  }
-  if (state.chatRoundCount >= 100) {
-    return { ok: false, reason: "Round chat limit reached (100 messages)." };
-  }
-
+  if (state.chatRecentTimestamps.length >= 5) return { ok: false, reason: "Rate limit: max 5 messages per 10 seconds." };
+  if (state.chatRoundCount >= 100) return { ok: false, reason: "Round chat limit reached (100 messages)." };
   state.chatRecentTimestamps.push(now);
   state.chatRoundCount += 1;
-  state.chatMessages.push({
-    round: state.round,
-    sender: chatSenderName(),
-    text: trimmed,
-    ts: now
-  });
+  state.chatMessages.push({ round: state.round, sender: chatSenderName(), text: trimmed, ts: now });
   state.chatMessages = state.chatMessages.slice(-500);
   return { ok: true };
 }
@@ -206,6 +325,38 @@ function drawOne() {
   reshuffleIfNeeded();
   if (state.drawPile.length === 0) return null;
   return state.drawPile.pop();
+}
+
+function serializeCurrentGameState() {
+  return {
+    round: state.round,
+    dealerIndex: state.dealerIndex,
+    currentPlayer: state.currentPlayer,
+    phase: state.phase,
+    drawPile: state.drawPile,
+    discardPile: state.discardPile,
+    tableMelds: state.tableMelds,
+    nextMeldId: state.nextMeldId,
+    draftMelds: state.draftMelds,
+    turnDiscardDecisionMade: state.turnDiscardDecisionMade,
+    buyingOrder: state.buyingOrder,
+    buyingIndex: state.buyingIndex,
+    discardBoughtBy: state.discardBoughtBy,
+    players: state.players
+  };
+}
+
+function syncGameStateToServer() {
+  if (state.isApplyingServerState) return;
+  const lobby = activeLobby();
+  if (!lobby || lobby.phase !== "in_progress") return;
+  if (!state.socket) return;
+  emitSocket(EVENTS.GAME_ACTION, {
+    action: GAME_ACTIONS.SYNC_STATE,
+    lobbyId: lobby.id,
+    round: state.round,
+    gameState: serializeCurrentGameState()
+  });
 }
 
 function currentPlayerObj() {
@@ -537,6 +688,7 @@ function roundEnd(winnerIndex) {
     el("gameOverArea").innerHTML = `<h2>Game Over</h2><p>${winnerText}</p>`;
     addLog(winnerText);
     renderAll();
+    syncGameStateToServer();
     return;
   }
 
@@ -583,6 +735,7 @@ function startRound() {
 
   addLog(`Round ${state.round} started. Dealer: ${state.players[state.dealerIndex].name}. ${state.players[state.currentPlayer].name} begins.`);
   renderAll();
+  syncGameStateToServer();
 }
 
 function showHome() {
@@ -592,6 +745,7 @@ function showHome() {
   el("scoreBar").style.display = "none";
   el("gameArea").style.display = "none";
   renderLobbyList();
+  emitSocket(EVENTS.LOBBY_LIST);
 }
 
 function showSetup() {
@@ -609,8 +763,10 @@ function showGame() {
 }
 
 function lobbyNames(lobby) {
+  if (Array.isArray(lobby.playerNames)) return lobby.playerNames;
+  if (!Array.isArray(lobby.slots)) return [];
   return lobby.slots
-    .filter((s) => (s.type === "ai") || (s.type === "human" && s.occupied && s.name.trim()))
+    .filter((s) => (s.type === "ai") || (s.type === "human" && s.occupied && s.name && s.name.trim()))
     .map((s) => s.name.trim());
 }
 
@@ -632,9 +788,11 @@ function renderLobbyList() {
       ? "Setup"
       : (lobby.phase === "in_progress" ? `In Progress (Round ${lobby.round})` : "Completed");
     const names = lobbyNames(lobby);
-    const emptyHumanSlots = lobby.slots
-      .map((s, idx) => ({ s, idx }))
-      .filter(({ s }) => s.type === "human" && !s.occupied);
+    const emptyHumanSlots = Array.isArray(lobby.setupOpenSeats)
+      ? lobby.setupOpenSeats.map((idx) => ({ idx }))
+      : (Array.isArray(lobby.slots)
+        ? lobby.slots.map((s, idx) => ({ s, idx })).filter(({ s }) => s.type === "human" && !s.occupied)
+        : []);
 
     const setupJoinButtons = lobby.phase === "setup"
       ? emptyHumanSlots.map(({ idx }) => `<button data-action="join-seat" data-lobby="${lobby.id}" data-seat="${idx}">Join Seat ${idx + 1}</button>`).join("")
@@ -652,7 +810,7 @@ function renderLobbyList() {
       <div class="lobby-item">
         <div class="lobby-title">${lobby.name}</div>
         <div class="lobby-meta">Phase: ${phaseText}</div>
-        <div class="lobby-meta">Players: ${lobbyPlayerCount(lobby)}/${lobby.maxPlayers}</div>
+        <div class="lobby-meta">Players: ${lobby.playersJoined ?? lobbyPlayerCount(lobby)}/${lobby.maxPlayers}</div>
         <div class="lobby-meta">Names: ${names.length ? names.join(", ") : "(none)"}</div>
         <div class="row">
           ${ownerOpenButton}
@@ -755,12 +913,30 @@ function saveLobbySetupFromInputs() {
   }
 }
 
+function collectSetupPayloadFromInputs() {
+  const lobby = activeLobby();
+  const maxPlayers = Number(el("setupPlayerCount").value) || lobby?.maxPlayers || 4;
+  const slots = [];
+  for (let i = 0; i < maxPlayers; i++) {
+    const raw = (el(`p${i + 1}`)?.value || "").trim();
+    const type = (el(`ptype${i + 1}`)?.value || "human");
+    slots.push({ name: raw, type });
+  }
+  return { maxPlayers, slots };
+}
+
 function createLobby() {
   const ownerName = (el("ownerName").value || "").trim() || "Player 1";
   const lobbyName = (el("newLobbyName").value || "").trim() || `Lobby ${state.nextLobbyId}`;
   const count = Number(el("playerCount").value);
   if (Number.isNaN(count) || count < 2 || count > 7) {
     alert("Player count must be from 2 to 7.");
+    return;
+  }
+  state.session.name = ownerName;
+  state.session.role = "owner";
+  state.session.seatIndex = 0;
+  if (emitSocket(EVENTS.LOBBY_CREATE, { ownerName, lobbyName, maxPlayers: count, cardBackStyle: state.selectedCardBackStyle })) {
     return;
   }
 
@@ -810,6 +986,10 @@ function joinLobbySeat(lobbyId, seatIndex) {
 
   const name = (prompt("Enter player name for this seat:", `Player ${seatIndex + 1}`) || "").trim();
   if (!name) return;
+  state.session.name = name;
+  state.session.role = "player";
+  state.session.seatIndex = seatIndex;
+  if (emitSocket(EVENTS.LOBBY_JOIN_SEAT, { lobbyId, seatIndex, playerName: name })) return;
 
   slot.occupied = true;
   slot.name = name;
@@ -822,6 +1002,10 @@ function spectateLobby(lobbyId) {
   const lobby = state.lobbies.find((l) => l.id === lobbyId);
   if (!lobby) return;
   const name = (prompt("Enter spectator name:", "Spectator") || "Spectator").trim() || "Spectator";
+  state.session.name = name;
+  state.session.role = "spectator";
+  state.session.seatIndex = -1;
+  if (emitSocket(EVENTS.LOBBY_SPECTATE, { lobbyId, spectatorName: name })) return;
   if (!lobby.spectators) lobby.spectators = [];
   if (!lobby.spectators.includes(name)) lobby.spectators.push(name);
   state.activeLobbyId = lobbyId;
@@ -837,6 +1021,7 @@ function spectateLobby(lobbyId) {
 function openSetupLobby(lobbyId) {
   const lobby = state.lobbies.find((l) => l.id === lobbyId);
   if (!lobby || lobby.phase !== "setup") return;
+  if (emitSocket(EVENTS.LOBBY_OPEN_SETUP, { lobbyId })) return;
   state.activeLobbyId = lobbyId;
   if (state.session.name === lobby.ownerName) {
     state.session = { name: lobby.ownerName, role: "owner", seatIndex: 0 };
@@ -869,6 +1054,12 @@ function startGame() {
   if (!lobby || lobby.phase !== "setup") return;
   if (state.session.role !== "owner") {
     alert("Only the lobby owner can start the game.");
+    return;
+  }
+  if (state.socket) {
+    const setupPayload = collectSetupPayloadFromInputs();
+    emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...setupPayload });
+    emitSocket(EVENTS.GAME_START, { lobbyId: lobby.id });
     return;
   }
 
@@ -951,6 +1142,7 @@ function aiActorIndexForPhase() {
 function scheduleAiAction() {
   if (state.gameOver) return;
   if (state.aiTimer) return;
+  if (state.socket && state.session.role !== "owner") return;
   const actorIndex = aiActorIndexForPhase();
   if (actorIndex === null || actorIndex === undefined) return;
   const actor = state.players[actorIndex];
@@ -1077,6 +1269,7 @@ function offerDiscardDecision(take) {
   }
 
   renderAll();
+  syncGameStateToServer();
 }
 
 function buyerDecision(buy) {
@@ -1106,6 +1299,7 @@ function buyerDecision(buy) {
   }
 
   renderAll();
+  syncGameStateToServer();
 }
 
 function currentDraw(source) {
@@ -1127,6 +1321,7 @@ function currentDraw(source) {
   }
   state.phase = "mainAction";
   renderAll();
+  syncGameStateToServer();
 }
 
 function addDraftMeld(type) {
@@ -1154,11 +1349,13 @@ function addDraftMeld(type) {
   state.draftMelds.push({ type, cards: [...cards] });
   for (const c of cards) state.selectedCardIds.delete(cardId(c));
   renderAll();
+  syncGameStateToServer();
 }
 
 function removeDraftMeld(index) {
   state.draftMelds.splice(index, 1);
   renderAll();
+  syncGameStateToServer();
 }
 
 function submitRoundMelds() {
@@ -1270,6 +1467,7 @@ function discardSelected() {
   state.turnDiscardDecisionMade = false;
   addLog(`Turn passes to ${currentPlayerObj().name}.`);
   renderAll();
+  syncGameStateToServer();
 }
 
 function sortHand(by) {
@@ -1344,12 +1542,17 @@ function renderTurnControls() {
   const p = currentPlayerObj();
   const topDiscard = state.discardPile[state.discardPile.length - 1];
   const root = el("turnControls");
+  const canControlTurn = state.session.role !== "spectator";
   if (!p) {
     root.innerHTML = "";
     return;
   }
 
   if (state.phase === "offerDiscard") {
+    if (!canControlTurn) {
+      root.innerHTML = `<p class="tiny muted">Spectator view: waiting for ${p.name}.</p>`;
+      return;
+    }
     if (p.isAI) {
       root.innerHTML = `<p class="tiny">${p.name} (AI) is deciding whether to take discard...</p>`;
       return;
@@ -1369,6 +1572,10 @@ function renderTurnControls() {
   if (state.phase === "buying") {
     const buyerIdx = state.buyingOrder[state.buyingIndex];
     const buyer = state.players[buyerIdx];
+    if (!canControlTurn) {
+      root.innerHTML = `<p class="tiny muted">Spectator view: buying phase in progress.</p>`;
+      return;
+    }
     if (buyer?.isAI) {
       root.innerHTML = `<p class="tiny">Buying phase: ${buyer.name} (AI) is deciding...</p>`;
       return;
@@ -1386,6 +1593,10 @@ function renderTurnControls() {
   }
 
   if (state.phase === "currentDraw") {
+    if (!canControlTurn) {
+      root.innerHTML = `<p class="tiny muted">Spectator view: waiting for ${p.name} to draw.</p>`;
+      return;
+    }
     if (p.isAI) {
       root.innerHTML = `<p class="tiny">${p.name} (AI) is choosing a draw source...</p>`;
       return;
@@ -1463,6 +1674,10 @@ function renderHandActions() {
   const p = currentPlayerObj();
   const viewer = viewerPlayerObj();
   const root = el("handActions");
+  if (state.session.role === "spectator") {
+    root.innerHTML = "<p class='muted tiny'>Spectator mode: hand actions disabled.</p>";
+    return;
+  }
   if (!p || state.phase !== "mainAction") {
     root.innerHTML = "<p class='muted tiny'>Hand actions unlock during main action phase.</p>";
     return;
@@ -1610,8 +1825,20 @@ el("cardBackPicker").addEventListener("click", (e) => {
   setCardBackChoice(Number(btn.getAttribute("data-back")));
 });
 el("lobbyList").addEventListener("click", handleLobbyListClick);
-el("buildPlayers").addEventListener("click", buildPlayerInputs);
-el("setupPlayerCount").addEventListener("change", buildPlayerInputs);
+el("buildPlayers").addEventListener("click", () => {
+  buildPlayerInputs();
+  const lobby = activeLobby();
+  if (state.socket && lobby && state.session.role === "owner" && lobby.phase === "setup") {
+    emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
+  }
+});
+el("setupPlayerCount").addEventListener("change", () => {
+  buildPlayerInputs();
+  const lobby = activeLobby();
+  if (state.socket && lobby && state.session.role === "owner" && lobby.phase === "setup") {
+    emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
+  }
+});
 el("startGame").addEventListener("click", () => {
   startGame();
   renderLobbyList();
@@ -1630,3 +1857,4 @@ el("chatInput").addEventListener("keydown", (e) => {
 
 showHome();
 renderCardBackPicker();
+connectSocketIfAvailable();
