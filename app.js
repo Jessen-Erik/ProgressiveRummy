@@ -1889,16 +1889,13 @@ function renderPlayersBoard() {
       isDealer ? `<span class="player-icon">D</span>` : "",
       isCurrent ? `<span class="player-icon">Turn</span>` : ""
     ].join("");
-    const headContent = hasMetRound
-      ? `<span class="face-eye eye-left"></span><span class="face-eye eye-right"></span><span class="face-smile"></span>`
-      : "";
     return `
       <div class="player-figure ${css}">
         <div class="player-icons">${icons}</div>
-        <div class="figure-head ${hasMetRound ? "met-head" : ""}">${headContent}</div>
+        <div class="figure-head"></div>
         <div class="figure-body"></div>
         <div class="figure-legs"><span></span><span></span></div>
-        <div class="player-name">${p.name}${isYou ? " (You)" : ""}</div>
+        <div class="player-name">${p.name}${isYou ? " (You)" : ` (${Array.isArray(p.hand) ? p.hand.length : 0})`}</div>
       </div>
     `;
   }).join("");
