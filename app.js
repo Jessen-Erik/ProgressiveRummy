@@ -1026,8 +1026,6 @@ function enterSetupLobby() {
 function joinLobbySeat(lobbyId, seatIndex) {
   const lobby = state.lobbies.find((l) => l.id === lobbyId);
   if (!lobby || lobby.phase !== "setup") return;
-  const slot = lobby.slots[seatIndex];
-  if (!slot || slot.type !== "human" || slot.occupied) return;
 
   const name = (prompt("Enter player name for this seat:", `Player ${seatIndex + 1}`) || "").trim();
   if (!name) return;
