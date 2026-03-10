@@ -61,6 +61,16 @@ function fail(socket, message) {
   socket.emit(EVENTS.ERROR, { message });
 }
 
+function closeLobbyIfNoHumans(lobby) {
+  if (!lobby) return false;
+  if (store.hasAnyActiveHumanPlayers(lobby)) return false;
+
+  io.to(lobby.id).emit(EVENTS.ERROR, { message: "Lobby closed: no human players remain." });
+  store.closeLobby(lobby.id);
+  emitLobbyList();
+  return true;
+}
+
 io.on("connection", (socket) => {
   socket.emit(EVENTS.LOBBY_LIST_UPDATE, store.listLobbySummaries());
   socket.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardTop(10));
@@ -148,6 +158,7 @@ io.on("connection", (socket) => {
     });
     if (!result.ok) return fail(socket, result.reason);
 
+    if (closeLobbyIfNoHumans(result.lobby)) return;
     emitLobbyList();
     emitLobbySnapshot(result.lobby.id);
   });
@@ -160,6 +171,7 @@ io.on("connection", (socket) => {
     });
     if (!result.ok) return fail(socket, result.reason);
 
+    if (closeLobbyIfNoHumans(result.lobby)) return;
     emitLobbyList();
     emitLobbySnapshot(result.lobby.id);
   });
@@ -203,6 +215,7 @@ io.on("connection", (socket) => {
         lobby.chat.byRoundCount = 0;
         lobby.chat.bySessionTimestamps = new Map();
       }
+      if (closeLobbyIfNoHumans(lobby)) return;
       emitLobbyList();
       if (winner) emitLeaderboard();
       emitLobbySnapshot(lobby.id);
@@ -240,8 +253,9 @@ io.on("connection", (socket) => {
           gamePlayer.isAI = true;
           gamePlayer.name = aiName;
         }
-      } else if (!slot.isOwner) {
-        // Setup phase: non-owner seat becomes open again.
+      } else {
+        // Setup phase: seat becomes open again.
+        slot.type = "human";
         slot.occupied = false;
         slot.name = "";
         slot.occupantSessionId = null;
@@ -281,6 +295,7 @@ io.on("connection", (socket) => {
     }
 
     lobby.spectators = lobby.spectators.filter((n) => n !== session.name);
+    if (closeLobbyIfNoHumans(lobby)) return;
     emitLobbyList();
     emitLobbySnapshot(lobby.id);
   });

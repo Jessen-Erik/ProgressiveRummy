@@ -44,6 +44,27 @@ export class LobbyStore {
     return session;
   }
 
+  hasAnyActiveHumanPlayers(lobby) {
+    if (!lobby?.slots) return false;
+    return lobby.slots.some((s) => s.type === "human" && s.occupied && !!s.occupantSessionId);
+  }
+
+  closeLobby(lobbyId) {
+    const lobby = this.getLobby(lobbyId);
+    if (!lobby) return null;
+
+    for (const session of this.socketToSession.values()) {
+      if (session.lobbyId === lobbyId) {
+        session.lobbyId = null;
+        session.seatIndex = -1;
+        session.role = "none";
+      }
+    }
+
+    this.lobbies.delete(lobbyId);
+    return lobby;
+  }
+
   createLobby({ ownerSocketId, ownerName, lobbyName, maxPlayers, cardBackStyle = 1 }) {
     const ownerSession = this.upsertSession(ownerSocketId, ownerName);
     const size = clampPlayers(maxPlayers);
