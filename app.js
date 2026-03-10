@@ -1027,8 +1027,11 @@ function collectSetupPayloadFromInputs() {
   const maxPlayers = Number(el("setupPlayerCount").value) || lobby?.maxPlayers || 4;
   const slots = [];
   for (let i = 0; i < maxPlayers; i++) {
-    const raw = (el(`p${i + 1}`)?.value || "").trim();
-    const type = (el(`ptype${i + 1}`)?.value || "human");
+    const existing = lobby?.slots?.[i] || { name: "", type: "human" };
+    const inputEl = el(`p${i + 1}`);
+    const modeEl = el(`ptype${i + 1}`);
+    const raw = ((inputEl ? inputEl.value : existing.name) || "").trim();
+    const type = (modeEl ? modeEl.value : existing.type) || "human";
     slots.push({ name: raw, type });
   }
   return { maxPlayers, slots };
@@ -1082,7 +1085,6 @@ function joinLobbySeat(lobbyId, seatIndex) {
   // Explicitly request/setup-open so Join Seat always navigates into lobby setup view.
   state.activeLobbyId = lobbyId;
   emitSocket(EVENTS.LOBBY_OPEN_SETUP, { lobbyId });
-  enterSetupLobby();
 }
 
 function spectateLobby(lobbyId) {
@@ -1891,14 +1893,20 @@ el("lobbyList").addEventListener("click", handleLobbyListClick);
 el("buildPlayers").addEventListener("click", () => {
   buildPlayerInputs();
   const lobby = activeLobby();
-  if (state.socket && lobby && (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup") {
+  if (
+    state.socket && lobby && Array.isArray(lobby.slots) && lobby.slots.length > 0 &&
+    (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup"
+  ) {
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
   }
 });
 el("setupPlayerCount").addEventListener("change", () => {
   buildPlayerInputs();
   const lobby = activeLobby();
-  if (state.socket && lobby && (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup") {
+  if (
+    state.socket && lobby && Array.isArray(lobby.slots) && lobby.slots.length > 0 &&
+    (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup"
+  ) {
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
   }
 });
