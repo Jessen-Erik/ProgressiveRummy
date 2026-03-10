@@ -15,6 +15,7 @@ export const EVENTS = {
 
   GAME_START: "game:start",
   GAME_ACTION: "game:action",
+  GAME_COMPLETE: "game:complete",
   GAME_SNAPSHOT: "game:snapshot",
 
   CHAT_SEND: "chat:send",

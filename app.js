@@ -27,6 +27,7 @@ const EVENTS = {
   LOBBY_SNAPSHOT: "lobby:snapshot",
   GAME_START: "game:start",
   GAME_ACTION: "game:action",
+  GAME_COMPLETE: "game:complete",
   GAME_SNAPSHOT: "game:snapshot",
   CHAT_SEND: "chat:send",
   CHAT_UPDATE: "chat:update",
@@ -1055,6 +1056,13 @@ function roundEnd(winnerIndex) {
     }
     const sorted = [...state.players].sort((a, b) => a.score - b.score);
     const winnerText = sorted[0].name + " wins with " + sorted[0].score + " point(s).";
+    if (lobby?.id) {
+      emitSocket(EVENTS.GAME_COMPLETE, {
+        lobbyId: lobby.id,
+        winnerName: sorted[0].name,
+        winnerScore: sorted[0].score
+      });
+    }
     el("gameOverArea").style.display = "block";
     el("gameOverArea").innerHTML = `<h2>Game Over</h2><p>${winnerText}</p>`;
     addLog(winnerText);
@@ -1323,13 +1331,13 @@ function buildPlayerInputs() {
   if (!lobby || !wrap) return;
 
   const requested = Number(el("setupPlayerCount").value);
-  if (!Number.isNaN(requested) && requested >= 2 && requested <= 7 && (state.session.role === "owner" || state.session.role === "player")) {
+  if (!Number.isNaN(requested) && requested >= 2 && requested <= 7 && state.session.role === "owner") {
     adjustLobbySlotCount(lobby, requested);
   } else {
     el("setupPlayerCount").value = String(lobby.maxPlayers);
   }
 
-  const canEdit = state.session.role === "owner" || state.session.role === "player";
+  const canEdit = state.session.role === "owner";
   wrap.innerHTML = "";
   for (let i = 0; i < lobby.maxPlayers; i++) {
     const slot = lobby.slots[i];
@@ -1374,7 +1382,7 @@ function buildPlayerInputs() {
 
 function saveLobbySetupFromInputs() {
   const lobby = activeLobby();
-  if (!lobby || (state.session.role !== "owner" && state.session.role !== "player")) return;
+  if (!lobby || state.session.role !== "owner") return;
   for (let i = 0; i < lobby.maxPlayers; i++) {
     const slot = lobby.slots[i];
     const raw = (el(`p${i + 1}`)?.value || "").trim();
@@ -1434,7 +1442,7 @@ function enterSetupLobby() {
   if (!lobby) return;
   el("setupLobbyTitle").textContent = `Lobby Setup: ${lobby.name}`;
   el("setupPlayerCount").value = String(lobby.maxPlayers);
-  const canEditSetup = state.session.role === "owner" || state.session.role === "player";
+  const canEditSetup = state.session.role === "owner";
   el("setupPlayerCount").disabled = !canEditSetup;
   el("buildPlayers").disabled = !canEditSetup;
   el("startGame").disabled = state.session.role !== "owner";
@@ -2317,7 +2325,7 @@ el("buildPlayers").addEventListener("click", () => {
   const lobby = activeLobby();
   if (
     state.socket && lobby && Array.isArray(lobby.slots) && lobby.slots.length > 0 &&
-    (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup"
+    state.session.role === "owner" && lobby.phase === "setup"
   ) {
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
   }
@@ -2327,7 +2335,7 @@ el("setupPlayerCount").addEventListener("change", () => {
   const lobby = activeLobby();
   if (
     state.socket && lobby && Array.isArray(lobby.slots) && lobby.slots.length > 0 &&
-    (state.session.role === "owner" || state.session.role === "player") && lobby.phase === "setup"
+    state.session.role === "owner" && lobby.phase === "setup"
   ) {
     emitSocket(EVENTS.LOBBY_UPDATE_SETUP, { lobbyId: lobby.id, ...collectSetupPayloadFromInputs() });
   }

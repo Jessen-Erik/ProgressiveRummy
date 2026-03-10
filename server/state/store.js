@@ -235,8 +235,7 @@ export class LobbyStore {
     const session = this.getSession(socketId);
     if (!session) return { ok: false, reason: "Session not found." };
     const isOwner = session.id === lobby.ownerSessionId;
-    const isSeatedPlayer = session.role === "player" && session.lobbyId === lobby.id && session.seatIndex >= 0;
-    if (!isOwner && !isSeatedPlayer) return { ok: false, reason: "Only owner or joined players can edit setup." };
+    if (!isOwner) return { ok: false, reason: "Only the lobby owner can edit setup." };
 
     const targetSize = clampPlayers(maxPlayers);
 
@@ -320,14 +319,26 @@ export class LobbyStore {
     const sorted = [...game.players].sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
     const winnerName = normalizeName(sorted[0]?.name, "");
     const winnerScore = Number(sorted[0]?.score ?? 0);
-    if (!winnerName) return null;
+    return this.recordLobbyWinnerByResult(lobby, winnerName, winnerScore);
+  }
+
+  recordLobbyWinnerByResult(lobby, winnerName, winnerScore) {
+    if (!lobby || lobby.hasRecordedWin) return null;
+    const safeWinnerName = normalizeName(winnerName, "");
+    const safeWinnerScore = Number(winnerScore ?? 0);
+    if (!safeWinnerName) return null;
 
     if (this.resultsDb) {
-      this.resultsDb.addGameResult(winnerName, winnerScore);
+      this.resultsDb.addGameResult(safeWinnerName, safeWinnerScore);
     }
     lobby.hasRecordedWin = true;
     lobby.phase = "completed";
-    return winnerName;
+    return safeWinnerName;
+  }
+
+  // Backward-compatible alias retained for existing call sites.
+  recordLobbyWinnerFromResult(lobby, winnerName, winnerScore) {
+    return this.recordLobbyWinnerByResult(lobby, winnerName, winnerScore);
   }
 
   leaderboardTop(limit = 10) {

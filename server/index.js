@@ -190,6 +190,26 @@ io.on("connection", (socket) => {
     emitLobbySnapshot(result.lobby.id);
   });
 
+  socket.on(EVENTS.GAME_COMPLETE, (payload = {}) => {
+    const session = store.getSession(socket.id);
+    if (!session?.lobbyId) return fail(socket, "Join a lobby first.");
+
+    const lobby = store.getLobby(session.lobbyId);
+    if (!lobby) return fail(socket, "Lobby not found.");
+    if (payload.lobbyId && payload.lobbyId !== lobby.id) return fail(socket, "Mismatched lobby.");
+
+    const winner = store.recordLobbyWinnerByResult(
+      lobby,
+      payload.winnerName,
+      payload.winnerScore
+    );
+    if (!winner) return;
+
+    emitLobbyList();
+    emitLeaderboard();
+    emitLobbySnapshot(lobby.id);
+  });
+
   socket.on(EVENTS.CHAT_SEND, (payload = {}) => {
     const result = store.addChat({
       socketId: socket.id,
