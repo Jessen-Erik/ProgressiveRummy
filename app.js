@@ -922,6 +922,27 @@ function closeRoundSummary() {
   renderRoundSummaryModal();
 }
 
+function promptRunWildPlacement() {
+  const modal = el("wildMoveModal");
+  const topBtn = el("chooseWildTop");
+  const bottomBtn = el("chooseWildBottom");
+  if (!modal || !topBtn || !bottomBtn) {
+    return Promise.resolve("top");
+  }
+
+  return new Promise((resolve) => {
+    const finish = (choice) => {
+      topBtn.onclick = null;
+      bottomBtn.onclick = null;
+      modal.style.display = "none";
+      resolve(choice);
+    };
+    topBtn.onclick = () => finish("top");
+    bottomBtn.onclick = () => finish("bottom");
+    modal.style.display = "flex";
+  });
+}
+
 function renderLastRoundSummaryButton() {
   const btn = el("viewLastRoundSummary");
   if (!btn) return;
@@ -955,7 +976,8 @@ function roundEnd(winnerIndex) {
     state.gameOver = true;
     state.phase = "gameOver";
     if (lobby) {
-      lobby.phase = "completed";
+      // Keep lobby in-progress locally until final gameOver snapshot is synced.
+      // Server will mark lobby completed after recording the winner.
       lobby.round = 7;
     }
     const sorted = [...state.players].sort((a, b) => a.score - b.score);
@@ -1126,7 +1148,7 @@ function renderLeaderboard() {
   const lowScoresHtml = lowScoreRows.length
     ? lowScoreRows.map((entry, idx) => `
       <div class="leaderboard-item">
-        <span>${idx + 1}. ${entry.name}</span>
+        <span>${idx === 0 ? "<span class='trophy-icon' title='Top Rank'>🏆</span> " : ""}${idx + 1}. ${entry.name}</span>
         <strong>${entry.score} point(s)</strong>
       </div>
     `).join("")
@@ -1134,7 +1156,7 @@ function renderLeaderboard() {
   const winsHtml = winsRows.length
     ? winsRows.map((entry, idx) => `
       <div class="leaderboard-item">
-        <span>${idx + 1}. ${entry.name}</span>
+        <span>${idx === 0 ? "<span class='trophy-icon' title='Top Rank'>🏆</span> " : ""}${idx + 1}. ${entry.name}</span>
         <strong>${entry.wins} win(s)</strong>
       </div>
     `).join("")
@@ -1737,7 +1759,7 @@ function submitRoundMelds() {
   renderAll();
 }
 
-function layOffToMeld() {
+async function layOffToMeld() {
   const p = currentPlayerObj();
   if (state.phase !== "mainAction" || !p.hasMetRound) return;
 
@@ -1775,10 +1797,7 @@ function layOffToMeld() {
       && addedNonWild.some((c) => previousRunCandidate.wildValues.includes(runValueForMode(c, previousRunCandidate.aceHigh)));
 
     if (replacedWildValue) {
-      const chooseTop = confirm(
-        "A laid-off card replaced a wild in this run.\nClick OK to place the freed wild at the TOP of the run.\nClick Cancel to place it at the BOTTOM."
-      );
-      preferEdgeWild = chooseTop ? "top" : "bottom";
+      preferEdgeWild = await promptRunWildPlacement();
     }
 
     meld.cards = orderRunCardsLowToHigh(combined, preferEdgeWild);
@@ -1864,15 +1883,19 @@ function renderPlayersBoard() {
     const isDealer = idx === state.dealerIndex;
     const isCurrent = idx === state.currentPlayer;
     const isYou = idx === state.viewerIndex;
-    const css = `${isYou ? "you" : ""} ${isCurrent ? "current" : ""}`.trim();
+    const hasMetRound = !!p.hasMetRound;
+    const css = `${isYou ? "you" : ""} ${isCurrent ? "current" : ""} ${hasMetRound && !isYou ? "met" : ""}`.trim();
     const icons = [
       isDealer ? `<span class="player-icon">D</span>` : "",
       isCurrent ? `<span class="player-icon">Turn</span>` : ""
     ].join("");
+    const headContent = hasMetRound
+      ? `<span class="face-eye eye-left"></span><span class="face-eye eye-right"></span><span class="face-smile"></span>`
+      : "";
     return `
       <div class="player-figure ${css}">
         <div class="player-icons">${icons}</div>
-        <div class="figure-head"></div>
+        <div class="figure-head ${hasMetRound ? "met-head" : ""}">${headContent}</div>
         <div class="figure-body"></div>
         <div class="figure-legs"><span></span><span></span></div>
         <div class="player-name">${p.name}${isYou ? " (You)" : ""}</div>
@@ -2105,6 +2128,7 @@ function renderHandActions() {
 
 function renderDraftMelds() {
   const root = el("draftMelds");
+  if (!root) return;
   if (state.draftMelds.length === 0) {
     root.innerHTML = "<p class='tiny muted'>No draft melds yet.</p>";
     return;

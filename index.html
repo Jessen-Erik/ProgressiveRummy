@@ -87,16 +87,8 @@
 
       <div class="card">
         <h2>Melds</h2>
-        <div class="split">
-          <div>
-            <h3>Draft Melds (this turn)</h3>
-            <div id="draftMelds"></div>
-          </div>
-          <div>
-            <h3>Table Melds</h3>
-            <div id="tableMelds"></div>
-          </div>
-        </div>
+        <h3>Table Melds</h3>
+        <div id="tableMelds"></div>
       </div>
 
       <div class="card">
@@ -119,6 +111,24 @@
           <button id="closeRoundSummary" class="secondary" type="button">Close</button>
         </div>
         <div id="roundSummaryBody"></div>
+      </div>
+    </div>
+
+    <div id="wildMoveModal" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="row" style="justify-content: space-between;">
+          <h2 id="wildMoveTitle">Move Freed Wild Card</h2>
+        </div>
+        <div id="wildMoveBody">
+          <div class="round-summary-player">
+            <p class="summary-line">A laid-off card replaced a wild in this run.</p>
+            <p class="summary-line">Choose where to move the freed wild card:</p>
+          </div>
+        </div>
+        <div class="row" style="justify-content:flex-end; margin-top:10px;">
+          <button id="chooseWildBottom" class="secondary" type="button">Bottom</button>
+          <button id="chooseWildTop" class="ok" type="button">Top</button>
+        </div>
       </div>
     </div>
   </div>
