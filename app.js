@@ -69,7 +69,8 @@ const state = {
   sessionId: null,
   isApplyingServerState: false,
   leaderboard: [],
-  lobbyRefreshTimer: null
+  lobbyRefreshTimer: null,
+  lastLobbyId: null
 };
 state.selectedCardBackStyle = 1;
 
@@ -117,6 +118,7 @@ function applyGameStateSnapshot(gameState) {
 function applyLobbySnapshot(snapshot) {
   upsertLobbyFromSnapshot(snapshot);
   state.activeLobbyId = snapshot.id;
+  state.lastLobbyId = snapshot.id;
   if (snapshot.sessionRole) state.session.role = snapshot.sessionRole;
   if (snapshot.chat) {
     state.chatMessages = snapshot.chat.messages || [];
@@ -129,6 +131,7 @@ function applyLobbySnapshot(snapshot) {
     if (snapshot.gameState) applyGameStateSnapshot(snapshot.gameState);
   }
   renderLobbyList();
+  renderRejoinButton();
 }
 
 function connectSocketIfAvailable() {
@@ -149,6 +152,7 @@ function connectSocketIfAvailable() {
   socket.on(EVENTS.LOBBY_LIST_UPDATE, (list) => {
     state.lobbies = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
     renderLobbyList();
+    renderRejoinButton();
   });
 
   socket.on(EVENTS.LEADERBOARD_UPDATE, (rows) => {
@@ -785,6 +789,7 @@ function showHome() {
   el("gameArea").style.display = "none";
   renderLobbyList();
   renderLeaderboard();
+  renderRejoinButton();
   emitSocket(EVENTS.LOBBY_LIST);
 }
 
@@ -887,6 +892,43 @@ function renderLeaderboard() {
       <strong>${entry.wins} win(s)</strong>
     </div>
   `).join("");
+}
+
+function renderRejoinButton() {
+  const btn = el("rejoinLobby");
+  if (!btn) return;
+  const lobbyId = state.lastLobbyId || state.activeLobbyId;
+  const lobby = state.lobbies.find((l) => l.id === lobbyId);
+  if (!lobby) {
+    btn.style.display = "none";
+    return;
+  }
+  btn.style.display = "inline-block";
+  btn.textContent = `Rejoin ${lobby.name}`;
+}
+
+function rejoinLastLobby() {
+  if (!state.socket || !state.socket.connected) {
+    alert("Not connected to multiplayer server.");
+    return;
+  }
+  const lobbyId = state.lastLobbyId || state.activeLobbyId;
+  if (!lobbyId) return;
+  const lobby = state.lobbies.find((l) => l.id === lobbyId);
+  if (!lobby) {
+    alert("Last lobby is no longer available.");
+    return;
+  }
+  state.activeLobbyId = lobbyId;
+  if (lobby.phase === "setup") {
+    emitSocket(EVENTS.LOBBY_OPEN_SETUP, { lobbyId });
+    enterSetupLobby();
+    return;
+  }
+  if (lobby.phase === "in_progress") {
+    const name = state.session.name || "Spectator";
+    emitSocket(EVENTS.LOBBY_SPECTATE, { lobbyId, spectatorName: name });
+  }
 }
 
 function adjustLobbySlotCount(lobby, count) {
@@ -1071,7 +1113,7 @@ function handleLobbyListClick(e) {
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
   const action = btn.getAttribute("data-action");
-  const lobbyId = Number(btn.getAttribute("data-lobby"));
+  const lobbyId = btn.getAttribute("data-lobby");
   if (!lobbyId) return;
   if (action === "join-seat") {
     const seat = Number(btn.getAttribute("data-seat"));
@@ -1866,6 +1908,7 @@ el("startGame").addEventListener("click", () => {
 });
 el("backToLobbies").addEventListener("click", showHome);
 el("returnToLobbies").addEventListener("click", showHome);
+el("rejoinLobby").addEventListener("click", rejoinLastLobby);
 el("sortRank").addEventListener("click", () => sortHand("rank"));
 el("sortSuit").addEventListener("click", () => sortHand("suit"));
 el("sendChat").addEventListener("click", handleSendChat);
