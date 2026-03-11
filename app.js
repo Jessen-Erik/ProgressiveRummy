@@ -1771,6 +1771,8 @@ function buyerDecision(buy) {
     syncGameStateToServer();
     return;
   }
+  const actingBuyer = state.players[buyerIdx];
+  if (actingBuyer && !actingBuyer.isAI && state.viewerIndex !== buyerIdx) return;
   const buyer = state.players[buyerIdx];
   if (!buyer || buyer.hasMetRound) {
     state.buyingIndex += 1;
@@ -2104,6 +2106,11 @@ function renderTurnControls() {
     }
     if (!canControlTurn) {
       root.innerHTML = `<p class="tiny muted">Spectator view: buying phase in progress.</p>`;
+      return;
+    }
+    const isPromptedBuyer = state.viewerIndex === buyerIdx;
+    if (!isPromptedBuyer) {
+      root.innerHTML = `<p class="tiny muted">Buying phase: waiting for ${buyer.name} to decide.</p>`;
       return;
     }
     if (buyer?.isAI) {
