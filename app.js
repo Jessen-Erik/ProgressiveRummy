@@ -869,7 +869,10 @@ function cardKeepScore(hand, card) {
 }
 
 function chooseDiscardCardAI(player) {
-  const ranked = [...player.hand]
+  const discardPool = player.hand.some((c) => !isWild(c))
+    ? player.hand.filter((c) => !isWild(c))
+    : [...player.hand];
+  const ranked = discardPool
     .map((c) => ({ c, score: cardKeepScore(player.hand, c) + Math.random() * 0.2 }))
     .sort((a, b) => a.score - b.score);
   return ranked[0]?.c || null;
@@ -905,12 +908,15 @@ function hardProbabilityFromDelta(delta, base = 0.08, scale = 10, cap = 0.92) {
 }
 
 function chooseDiscardCardAIHard(player) {
-  const ranked = [...player.hand]
+  const discardPool = player.hand.some((c) => !isWild(c))
+    ? player.hand.filter((c) => !isWild(c))
+    : [...player.hand];
+  const ranked = discardPool
     .map((candidate) => {
       const simulated = player.hand.filter((c) => cardId(c) !== cardId(candidate));
       const utility = hardHandUtilityForRound(player, simulated);
       const keepScore = cardKeepScore(player.hand, candidate);
-      const score = utility - keepScore * 0.65 + Math.random() * 0.08;
+      const score = utility + keepScore * 0.65 + Math.random() * 0.08;
       return { card: candidate, score };
     })
     .sort((a, b) => a.score - b.score);
@@ -1694,6 +1700,10 @@ function runAiAction() {
 
   if (state.phase === "offerDiscard") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
+    if (topDiscard && isWild(topDiscard)) {
+      offerDiscardDecision(true);
+      return;
+    }
     const utilityFn = level === "hard" ? hardHandUtilityForRound : handUtilityForCurrentRound;
     const baseUtility = utilityFn(actor, actor.hand);
     const withDiscardUtility = topDiscard ? utilityFn(actor, [...actor.hand, topDiscard]) : baseUtility;
@@ -1707,6 +1717,10 @@ function runAiAction() {
 
   if (state.phase === "buying") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
+    if (topDiscard && isWild(topDiscard)) {
+      buyerDecision(true);
+      return;
+    }
     const utilityFn = level === "hard" ? hardHandUtilityForRound : handUtilityForCurrentRound;
     const baseUtility = utilityFn(actor, actor.hand);
     const withDiscardPenalty = topDiscard ? utilityFn(actor, [...actor.hand, topDiscard]) - 8 : baseUtility - 8;
@@ -1720,6 +1734,10 @@ function runAiAction() {
 
   if (state.phase === "currentDraw") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
+    if (topDiscard && isWild(topDiscard)) {
+      currentDraw("discard");
+      return;
+    }
     const utilityFn = level === "hard" ? hardHandUtilityForRound : handUtilityForCurrentRound;
     const baseUtility = utilityFn(actor, actor.hand);
     const withDiscard = topDiscard ? utilityFn(actor, [...actor.hand, topDiscard]) : baseUtility;
