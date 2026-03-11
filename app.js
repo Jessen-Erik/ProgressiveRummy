@@ -937,6 +937,15 @@ function layoffPotentialPoints(hand) {
   return points;
 }
 
+function canCardPlayOnActiveMelds(card) {
+  if (!card || !Array.isArray(state.tableMelds) || state.tableMelds.length === 0) return false;
+  for (const meld of state.tableMelds) {
+    const v = validateMeldByType(meld.type, [...meld.cards, card]);
+    if (v.ok) return true;
+  }
+  return false;
+}
+
 function handUtilityForCurrentRound(player, hand) {
   if (player.hasMetRound) {
     return layoffPotentialPoints(hand) - cardsPointsTotal(hand) * 0.15;
@@ -1700,6 +1709,10 @@ function runAiAction() {
 
   if (state.phase === "offerDiscard") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
+    if (actor.hasMetRound && topDiscard && !canCardPlayOnActiveMelds(topDiscard)) {
+      offerDiscardDecision(false);
+      return;
+    }
     if (topDiscard && isWild(topDiscard)) {
       offerDiscardDecision(true);
       return;
@@ -1717,6 +1730,10 @@ function runAiAction() {
 
   if (state.phase === "buying") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
+    if (actor.hasMetRound && topDiscard && !canCardPlayOnActiveMelds(topDiscard)) {
+      buyerDecision(false);
+      return;
+    }
     if (topDiscard && isWild(topDiscard)) {
       buyerDecision(true);
       return;
@@ -1734,6 +1751,10 @@ function runAiAction() {
 
   if (state.phase === "currentDraw") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
+    if (actor.hasMetRound && topDiscard && !canCardPlayOnActiveMelds(topDiscard)) {
+      currentDraw("deck");
+      return;
+    }
     if (topDiscard && isWild(topDiscard)) {
       currentDraw("discard");
       return;
