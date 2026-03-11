@@ -39,6 +39,7 @@ const EVENTS = {
 const GAME_ACTIONS = {
   SYNC_STATE: "sync_state"
 };
+const AI_MAX_HAND_SIZE = 22;
 
 const state = {
   lobbies: [],
@@ -1778,6 +1779,11 @@ function runAiAction() {
   }
 
   if (state.phase === "buying") {
+    // Buying can add two cards (discard + penalty), so cap at 22.
+    if (actor.hand.length >= AI_MAX_HAND_SIZE - 1) {
+      buyerDecision(false);
+      return;
+    }
     const topDiscard = state.discardPile[state.discardPile.length - 1];
     if (actor.hasMetRound && topDiscard && !canCardPlayOnActiveMelds(topDiscard)) {
       buyerDecision(false);
@@ -1999,6 +2005,10 @@ function buyerDecision(buy) {
     return;
   }
   const topDiscard = state.discardPile[state.discardPile.length - 1];
+  if (buy && buyer.isAI && buyer.hand.length + 2 > AI_MAX_HAND_SIZE) {
+    buy = false;
+    addLog(`${buyer.name} passed (AI hand cap ${AI_MAX_HAND_SIZE} prevents buying).`);
+  }
 
   if (buy) {
     const boughtCard = state.discardPile.pop();

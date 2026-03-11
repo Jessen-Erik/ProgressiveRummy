@@ -128,7 +128,7 @@ export class LobbyStore {
   listLobbySummaries() {
     return [...this.lobbies.values()].map((lobby) => {
       const names = lobby.slots
-        .filter((s) => s.type === "ai" || (s.type === "human" && s.occupied && s.name))
+        .filter((s) => s.type === "ai" || (s.type === "human" && s.occupied && (s.isOwner || !!s.occupantSessionId) && s.name))
         .map((s) => s.name);
       const setupOpenSeats = lobby.phase === "setup"
         ? lobby.slots
@@ -255,7 +255,8 @@ export class LobbyStore {
         const incoming = slots[i];
         if (!incoming) continue;
         const existing = lobby.slots[i];
-        const newType = incoming.type === "ai" ? "ai" : "human";
+        const requestedType = incoming.type;
+        const newType = requestedType === "ai" || requestedType === "human" ? requestedType : existing.type;
         const aiLevel = incoming.aiLevel === "hard" ? "hard" : "medium";
         existing.type = newType;
 
@@ -268,8 +269,16 @@ export class LobbyStore {
           existing.aiLevel = null;
           if (existing.isOwner) {
             existing.occupied = true;
+            existing.occupantSessionId = existing.occupantSessionId || lobby.ownerSessionId || null;
             existing.name = normalizeName(incoming.name, existing.name || "Owner");
-          } else if (!existing.occupied) {
+          } else if (existing.occupantSessionId) {
+            // Keep a connected human seat occupied.
+            existing.occupied = true;
+            existing.name = normalizeName(incoming.name, existing.name || `Player ${i + 1}`);
+          } else {
+            // Empty human seat. Prevent phantom occupied humans (e.g. AI->human conversion).
+            existing.occupied = false;
+            existing.occupantSessionId = null;
             existing.name = normalizeName(incoming.name, "");
           }
         }
@@ -295,7 +304,7 @@ export class LobbyStore {
       if (s.type === "ai") {
         seatToPlayer[i] = activePlayers.length;
         activePlayers.push({ name: s.name, isAI: true, aiLevel: s.aiLevel === "hard" ? "hard" : "medium" });
-      } else if (s.occupied && s.name) {
+      } else if (s.occupied && s.name && (s.isOwner || !!s.occupantSessionId)) {
         seatToPlayer[i] = activePlayers.length;
         activePlayers.push({ name: s.name, isAI: false, sessionId: s.occupantSessionId });
       }
