@@ -31,6 +31,7 @@ const EVENTS = {
   GAME_SNAPSHOT: "game:snapshot",
   CHAT_SEND: "chat:send",
   CHAT_UPDATE: "chat:update",
+  LEADERBOARD_REQUEST: "leaderboard:request",
   LEADERBOARD_UPDATE: "leaderboard:update",
   ERROR: "error:server"
 };
@@ -67,6 +68,7 @@ const state = {
   viewerIndex: 0,
   lastDiscardRenderId: null,
   turnDiscardDecisionMade: false,
+  turnDeclinedDiscardOffer: false,
   chatMessages: [],
   chatRecentTimestamps: [],
   chatRoundCount: 0,
@@ -158,6 +160,7 @@ function applyGameStateSnapshot(gameState) {
     ? gameState.pendingRoundWinnerIndex
     : null;
   state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
+  state.turnDeclinedDiscardOffer = !!gameState.turnDeclinedDiscardOffer;
   if (gameState.round !== previousRound && state.roundRevealShownFor !== gameState.round) {
     state.roundRevealShownFor = gameState.round;
     state.roundRevealEndsAt = 0;
@@ -258,6 +261,12 @@ function emitSocket(eventName, payload) {
   if (!state.socket) return false;
   state.socket.emit(eventName, payload);
   return true;
+}
+
+function requestLeaderboardRefresh() {
+  if (!emitSocket(EVENTS.LEADERBOARD_REQUEST)) {
+    renderLeaderboard();
+  }
 }
 
 function setLobbyRefreshActive(active) {
@@ -483,6 +492,7 @@ function serializeCurrentGameState() {
     nextMeldId: state.nextMeldId,
     draftMelds: state.draftMelds,
     turnDiscardDecisionMade: state.turnDiscardDecisionMade,
+    turnDeclinedDiscardOffer: state.turnDeclinedDiscardOffer,
     buyingOrder: state.buyingOrder,
     buyingIndex: state.buyingIndex,
     discardBoughtBy: state.discardBoughtBy,
@@ -516,6 +526,7 @@ function beginTurnForPlayer(idx) {
   state.buyingOrder = [];
   state.buyingIndex = 0;
   state.turnDiscardDecisionMade = false;
+  state.turnDeclinedDiscardOffer = false;
   state.aiPickedDiscardCardId = null;
   markTurnTaken(idx);
 }
@@ -1378,14 +1389,23 @@ function renderLeaderboard() {
 
   wrap.innerHTML = `
     <div class="card">
-      <h3>Lowest Winning Scores</h3>
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Lowest Winning Scores</h3>
+        <button class="secondary tiny" data-action="refresh-leaderboard">Refresh</button>
+      </div>
       ${lowScoresHtml}
     </div>
     <div class="card">
-      <h3>Total Wins</h3>
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Total Wins</h3>
+        <button class="secondary tiny" data-action="refresh-leaderboard">Refresh</button>
+      </div>
       ${winsHtml}
     </div>
   `;
+  wrap.querySelectorAll('button[data-action="refresh-leaderboard"]').forEach((btn) => {
+    btn.addEventListener("click", requestLeaderboardRefresh);
+  });
 }
 
 function renderRejoinButton() {
@@ -1909,10 +1929,13 @@ function offerDiscardDecision(take) {
   if (take) {
     const taken = state.discardPile.pop();
     p.hand.push(taken);
+    if (taken) animateCardToPlayer({ fromElementId: "discardPileVisual", toPlayerIndex: state.currentPlayer, card: taken });
+    state.turnDeclinedDiscardOffer = false;
     state.aiPickedDiscardCardId = p.isAI && taken ? cardId(taken) : null;
     state.phase = "mainAction";
     addLog(`${p.name} picked up from discard pile.`);
   } else {
+    state.turnDeclinedDiscardOffer = true;
     state.phase = "buying";
     state.discardBoughtBy = null;
     state.buyingOrder = [];
@@ -1962,9 +1985,16 @@ function buyerDecision(buy) {
   const topDiscard = state.discardPile[state.discardPile.length - 1];
 
   if (buy) {
-    buyer.hand.push(state.discardPile.pop());
+    const boughtCard = state.discardPile.pop();
+    if (boughtCard) buyer.hand.push(boughtCard);
+    if (boughtCard) {
+      animateCardToPlayer({ fromElementId: "discardPileVisual", toPlayerIndex: buyerIdx, card: boughtCard });
+    }
     const penalty = drawOne();
-    if (penalty) buyer.hand.push(penalty);
+    if (penalty) {
+      buyer.hand.push(penalty);
+      animateCardToPlayer({ fromElementId: "drawPileVisual", toPlayerIndex: buyerIdx, faceDown: true, delayMs: 120 });
+    }
 
     state.discardBoughtBy = buyerIdx;
     state.phase = "currentDraw";
@@ -1987,6 +2017,9 @@ function buyerDecision(buy) {
 function currentDraw(source) {
   if (state.phase !== "currentDraw") return;
   const p = currentPlayerObj();
+  if (source === "discard" && state.turnDeclinedDiscardOffer && state.discardBoughtBy === null) {
+    source = "deck";
+  }
   let card = null;
   if (source === "discard") {
     if (state.discardPile.length === 0) return;
@@ -1999,6 +2032,9 @@ function currentDraw(source) {
     addLog(`${p.name} could not draw a card (no cards available).`);
   } else {
     p.hand.push(card);
+    if (source === "discard") {
+      animateCardToPlayer({ fromElementId: "discardPileVisual", toPlayerIndex: state.currentPlayer, card });
+    }
     state.aiPickedDiscardCardId = (p.isAI && source === "discard") ? cardId(card) : null;
     addLog(`${p.name} drew ${cardLabel(card)} from ${source === "discard" ? "discard" : "draw"} pile.`);
   }
@@ -2037,6 +2073,12 @@ function addDraftMeld(type) {
 
 function removeDraftMeld(index) {
   state.draftMelds.splice(index, 1);
+  renderAll();
+  syncGameStateToServer();
+}
+
+function resetDraftMelds() {
+  state.draftMelds = [];
   renderAll();
   syncGameStateToServer();
 }
@@ -2212,7 +2254,7 @@ function renderPlayersBoard() {
       isCurrent ? `<span class="player-icon">Turn</span>` : ""
     ].join("");
     return `
-      <div class="player-figure ${css}">
+      <div class="player-figure ${css}" data-player-idx="${idx}">
         <div class="player-icons">${icons}</div>
         <div class="figure-head"></div>
         <div class="figure-body"></div>
@@ -2233,13 +2275,61 @@ function renderPiles() {
   el("pileArea").innerHTML = `
     <div class="pile-box">
       <div class="pile-title">Draw Pile (${state.drawPile.length})</div>
-      <div class="card-back back-style-${backStyle}"></div>
+      <div id="drawPileVisual" class="card-back back-style-${backStyle}"></div>
     </div>
     <div class="pile-box">
       <div class="pile-title">Current Discard</div>
-      ${topDiscard ? renderCardModel(topDiscard, { extraClass: isNewDiscard ? "discard-changed" : "" }) : `<div class="tiny muted">(empty)</div>`}
+      ${topDiscard
+    ? `<div id="discardPileVisual">${renderCardModel(topDiscard, { extraClass: isNewDiscard ? "discard-changed" : "" })}</div>`
+    : `<div id="discardPileVisual" class="tiny muted">(empty)</div>`}
     </div>
   `;
+}
+
+function animateCardToPlayer({ fromElementId, toPlayerIndex, card = null, faceDown = false, delayMs = 0 }) {
+  const from = document.getElementById(fromElementId);
+  const to = document.querySelector(`#playersBoard .player-figure[data-player-idx="${toPlayerIndex}"]`);
+  if (!from || !to) return;
+
+  const fromRect = from.getBoundingClientRect();
+  const toRect = to.getBoundingClientRect();
+  if (fromRect.width === 0 || fromRect.height === 0 || toRect.width === 0 || toRect.height === 0) return;
+
+  const layer = document.createElement("div");
+  layer.className = "card-transfer-layer";
+  document.body.appendChild(layer);
+
+  const flying = document.createElement("div");
+  flying.className = "card-transfer-item";
+  if (faceDown) {
+    const backStyle = activeLobby()?.cardBackStyle || 1;
+    flying.innerHTML = `<div class="card-back back-style-${backStyle}"></div>`;
+  } else if (card) {
+    flying.innerHTML = renderCardModel(card, { disabled: true });
+  } else {
+    flying.innerHTML = `<div class="card-back"></div>`;
+  }
+  layer.appendChild(flying);
+
+  const startX = fromRect.left + fromRect.width / 2 - 36;
+  const startY = fromRect.top + fromRect.height / 2 - 51;
+  const endX = toRect.left + toRect.width / 2 - 36;
+  const endY = toRect.top + toRect.height / 2 - 51;
+
+  flying.style.left = `${startX}px`;
+  flying.style.top = `${startY}px`;
+
+  window.setTimeout(() => {
+    requestAnimationFrame(() => {
+      flying.classList.add("is-animating");
+      flying.style.transform = `translate(${endX - startX}px, ${endY - startY}px) scale(0.86)`;
+      flying.style.opacity = "0.92";
+    });
+  }, Math.max(0, Number(delayMs) || 0));
+
+  window.setTimeout(() => {
+    layer.remove();
+  }, 1200 + Math.max(0, Number(delayMs) || 0));
 }
 
 function renderTurnControls() {
@@ -2314,7 +2404,7 @@ function renderTurnControls() {
       root.innerHTML = `<p class="tiny">${p.name} (AI) is choosing a draw source...</p>`;
       return;
     }
-    const canTakeDiscard = state.discardPile.length > 0;
+    const canTakeDiscard = state.discardPile.length > 0 && !(state.turnDeclinedDiscardOffer && state.discardBoughtBy === null);
     root.innerHTML = `
       <p class="tiny">${p.name}: draw your card.</p>
       <div class="row">
@@ -2364,12 +2454,27 @@ function renderHand() {
   const draftCardIds = new Set(state.draftMelds.flatMap((m) => m.cards.map(cardId)));
   const canLayoffNow = canInteract && !!current?.hasMetRound && state.tableMelds.length > 0;
   const layoffCandidateIds = new Set();
+  const nextPlayerLayoffRiskIds = new Set();
   if (canLayoffNow) {
     for (const card of p.hand) {
       for (const meld of state.tableMelds) {
         const check = validateMeldByType(meld.type, [...meld.cards, card]);
         if (check.ok) {
           layoffCandidateIds.add(cardId(card));
+          break;
+        }
+      }
+    }
+  }
+  const nextPlayerIdx = (canInteract && state.players.length > 1) ? nextIndex(state.currentPlayer) : -1;
+  const nextPlayer = nextPlayerIdx >= 0 ? state.players[nextPlayerIdx] : null;
+  const showNextPlayerLayoffRisk = canInteract && !current?.hasMetRound && !!nextPlayer?.hasMetRound && state.tableMelds.length > 0;
+  if (showNextPlayerLayoffRisk) {
+    for (const card of p.hand) {
+      for (const meld of state.tableMelds) {
+        const check = validateMeldByType(meld.type, [...meld.cards, card]);
+        if (check.ok) {
+          nextPlayerLayoffRiskIds.add(cardId(card));
           break;
         }
       }
@@ -2404,9 +2509,11 @@ function renderHand() {
     for (const c of p.hand) {
       const inDraftMeld = draftCardIds.has(cardId(c));
       const canLayoffCard = layoffCandidateIds.has(cardId(c));
+      const nextPlayerRisk = nextPlayerLayoffRiskIds.has(cardId(c));
       const extraClasses = [
         inDraftMeld ? "in-draft-meld" : "",
-        canLayoffCard ? "layoff-candidate" : ""
+        canLayoffCard ? "layoff-candidate" : "",
+        nextPlayerRisk ? "next-player-layoff-candidate" : ""
       ].filter(Boolean).join(" ");
       const cardNode = document.createElement("div");
       cardNode.innerHTML = renderCardModel(c, {
@@ -2424,6 +2531,7 @@ function renderHand() {
       const id = e.target.getAttribute("data-id");
       if (e.target.checked) state.selectedCardIds.add(id);
       else state.selectedCardIds.delete(id);
+      updateTargetMeldEligibility();
     });
   });
 
@@ -2465,6 +2573,7 @@ function renderHandActions() {
         <button id="makeSet" class="secondary">Create Set from Selected</button>
         <button id="makeRun" class="secondary">Create Run from Selected</button>
         <button id="submitMelds" class="ok">Submit Round Requirements</button>
+        <button id="resetMelds" class="secondary">Reset Temporary Melds</button>
       </div>
       <p class="tiny muted">After meeting round requirements, you can discard to end turn.</p>
       <div class="row" style="margin-top:6px;">
@@ -2474,6 +2583,7 @@ function renderHandActions() {
     el("makeSet").onclick = () => addDraftMeld("set");
     el("makeRun").onclick = () => addDraftMeld("run");
     el("submitMelds").onclick = submitRoundMelds;
+    el("resetMelds").onclick = resetDraftMelds;
     el("discardBtn").onclick = discardSelected;
     return;
   }
@@ -2494,8 +2604,38 @@ function renderHandActions() {
     <p class="tiny muted">You may lay off cards to your melds or other players' accepted melds.</p>
   `;
 
+  updateTargetMeldEligibility();
   el("layOffBtn").onclick = layOffToMeld;
   el("discardBtn").onclick = discardSelected;
+}
+
+function updateTargetMeldEligibility() {
+  const select = el("targetMeld");
+  if (!select) return;
+  const p = currentPlayerObj();
+  if (!p || !p.hasMetRound || state.phase !== "mainAction") return;
+  const selected = selectedCardsFromHand();
+
+  [...select.options].forEach((opt) => {
+    if (!opt.value) return;
+    if (!opt.dataset.baseLabel) opt.dataset.baseLabel = opt.textContent;
+    opt.textContent = opt.dataset.baseLabel;
+    opt.classList.remove("meld-option-eligible");
+  });
+
+  if (selected.length === 0) return;
+
+  [...select.options].forEach((opt) => {
+    if (!opt.value) return;
+    const meldId = Number(opt.value);
+    const meld = state.tableMelds.find((m) => m.id === meldId);
+    if (!meld) return;
+    const check = validateMeldByType(meld.type, [...meld.cards, ...selected]);
+    if (check.ok) {
+      opt.classList.add("meld-option-eligible");
+      opt.textContent = `● ${opt.dataset.baseLabel}`;
+    }
+  });
 }
 
 function renderDraftMelds() {
@@ -2536,6 +2676,32 @@ function renderTableMelds() {
 
 function renderLog() {
   el("log").innerHTML = state.log.map((entry) => `<p>${entry}</p>`).join("");
+  const btn = el("downloadLogBtn");
+  if (btn) {
+    btn.style.display = state.phase === "gameOver" ? "inline-block" : "none";
+  }
+}
+
+function downloadLogAsText() {
+  if (state.phase !== "gameOver") return;
+  const lines = state.log && state.log.length ? [...state.log].reverse() : ["No log entries available."];
+  const header = [
+    "Progressive Rummy - Game Log",
+    `Round: ${state.round}`,
+    `Generated: ${new Date().toISOString()}`,
+    ""
+  ];
+  const text = [...header, ...lines].join("\n");
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  a.href = url;
+  a.download = `progressive-rummy-log-${stamp}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function renderChat() {
@@ -2618,6 +2784,7 @@ el("startGame").addEventListener("click", () => {
 });
 el("backToLobbies").addEventListener("click", showHome);
 el("returnToLobbies").addEventListener("click", showHome);
+el("downloadLogBtn").addEventListener("click", downloadLogAsText);
 el("rejoinLobby").addEventListener("click", rejoinLastLobby);
 el("themeToggle").addEventListener("click", toggleTheme);
 el("helpButton").addEventListener("click", openHelpModal);

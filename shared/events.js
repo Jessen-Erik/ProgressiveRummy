@@ -20,6 +20,7 @@ export const EVENTS = {
 
   CHAT_SEND: "chat:send",
   CHAT_UPDATE: "chat:update",
+  LEADERBOARD_REQUEST: "leaderboard:request",
   LEADERBOARD_UPDATE: "leaderboard:update",
 
   ERROR: "error:server"

@@ -86,6 +86,10 @@ io.on("connection", (socket) => {
     socket.emit(EVENTS.LOBBY_LIST_UPDATE, store.listLobbySummaries());
   });
 
+  socket.on(EVENTS.LEADERBOARD_REQUEST, () => {
+    socket.emit(EVENTS.LEADERBOARD_UPDATE, store.leaderboardSnapshot(10));
+  });
+
   socket.on(EVENTS.LOBBY_CREATE, (payload = {}) => {
     const lobby = store.createLobby({
       ownerSocketId: socket.id,

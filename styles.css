@@ -352,6 +352,21 @@ input[type="text"], input[type="number"], select {
   pointer-events: none;
 }
 
+.playing-card.next-player-layoff-candidate::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: #1f6ad6;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 6px rgba(31, 106, 214, 0.45);
+  pointer-events: none;
+}
+
 .pile-area {
   margin-top: 6px;
   display: flex;
@@ -531,6 +546,30 @@ input[type="text"], input[type="number"], select {
   }
 }
 
+.card-transfer-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3500;
+}
+
+.card-transfer-item {
+  position: fixed;
+  width: 72px;
+  height: 102px;
+  left: 0;
+  top: 0;
+  transform: translate(0, 0) scale(1);
+  opacity: 1;
+  transition: transform 1000ms ease-in-out, opacity 1000ms ease-in-out;
+}
+
+.card-transfer-item .playing-card,
+.card-transfer-item .card-back {
+  width: 72px;
+  height: 102px;
+}
+
 .card-back {
   width: 72px;
   height: 102px;
@@ -614,6 +653,41 @@ input[type="text"], input[type="number"], select {
   margin-top: 6px;
 }
 
+#tableMelds {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+#tableMelds .meld-item {
+  margin-bottom: 0;
+}
+
+#tableMelds .meld-cards {
+  gap: 4px;
+}
+
+#tableMelds .playing-card {
+  width: 56px;
+  height: 80px;
+  padding: 4px;
+}
+
+#tableMelds .playing-card .corner-top,
+#tableMelds .playing-card .corner-bottom {
+  font-size: 0.72rem;
+}
+
+#tableMelds .playing-card .center {
+  font-size: 1rem;
+}
+
+@media (max-width: 700px) {
+  #tableMelds {
+    grid-template-columns: 1fr;
+  }
+}
+
 .muted { color: #5f6974; }
 .log {
   max-height: 260px;
@@ -641,6 +715,11 @@ input[type="text"], input[type="number"], select {
 }
 
 .tiny { font-size: 0.85rem; }
+
+option.meld-option-eligible {
+  color: #1f6ad6;
+  font-weight: 700;
+}
 
 .lobby-list {
   display: grid;
