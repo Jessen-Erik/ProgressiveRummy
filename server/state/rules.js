@@ -35,6 +35,7 @@ export function buildInitialGameState(activePlayers) {
   const players = activePlayers.map((p) => ({
     name: p.name,
     isAI: !!p.isAI,
+    aiLevel: p.isAI ? (p.aiLevel === "hard" ? "hard" : "medium") : null,
     score: 0,
     hand: [],
     hasMetRound: false,

@@ -875,6 +875,48 @@ function chooseDiscardCardAI(player) {
   return ranked[0]?.c || null;
 }
 
+function aiDifficulty(player) {
+  return player?.aiLevel === "hard" ? "hard" : "medium";
+}
+
+function hardHandUtilityForRound(player, hand) {
+  const pointsPenalty = cardsPointsTotal(hand) * 0.55;
+  if (player.hasMetRound) {
+    const layoffGain = layoffPotentialPoints(hand) * 1.1;
+    return layoffGain - pointsPenalty;
+  }
+  const plan = pickBestRoundPlan(hand, state.round);
+  if (!plan) return -pointsPenalty;
+  const usedCount = plan.usedIds.size;
+  const usedPoints = cardsPointsTotal(
+    [...plan.usedIds]
+      .map((id) => hand.find((c) => cardId(c) === id))
+      .filter(Boolean)
+  );
+  const req = ROUND_REQUIREMENTS[state.round];
+  const requiredMelds = req.sets + req.runs;
+  const meldCoverage = Math.min(requiredMelds, plan.melds.length) * 25;
+  return usedPoints * 1.4 + usedCount * 4 + meldCoverage - pointsPenalty;
+}
+
+function hardProbabilityFromDelta(delta, base = 0.08, scale = 10, cap = 0.92) {
+  const p = base + (1 / (1 + Math.exp(-delta / Math.max(1, scale)))) * (cap - base);
+  return Math.max(base, Math.min(cap, p));
+}
+
+function chooseDiscardCardAIHard(player) {
+  const ranked = [...player.hand]
+    .map((candidate) => {
+      const simulated = player.hand.filter((c) => cardId(c) !== cardId(candidate));
+      const utility = hardHandUtilityForRound(player, simulated);
+      const keepScore = cardKeepScore(player.hand, candidate);
+      const score = utility - keepScore * 0.65 + Math.random() * 0.08;
+      return { card: candidate, score };
+    })
+    .sort((a, b) => a.score - b.score);
+  return ranked[0]?.card || null;
+}
+
 function layoffPotentialPoints(hand) {
   let points = 0;
   for (const c of hand) {
@@ -1358,7 +1400,7 @@ function adjustLobbySlotCount(lobby, count) {
   const clamped = Math.max(2, Math.min(7, count));
   if (clamped > lobby.slots.length) {
     for (let i = lobby.slots.length; i < clamped; i++) {
-      lobby.slots.push({ name: "", type: "human", occupied: false, isOwner: false });
+      lobby.slots.push({ name: "", type: "human", aiLevel: null, occupied: false, isOwner: false });
     }
   } else if (clamped < lobby.slots.length) {
     lobby.slots = lobby.slots.slice(0, clamped);
@@ -1401,16 +1443,20 @@ function buildPlayerInputs() {
 
     const mode = document.createElement("select");
     mode.id = `ptype${i + 1}`;
+    const selectedMode = slot.type === "ai"
+      ? (slot.aiLevel === "hard" ? "ai_hard" : "ai_medium")
+      : "human";
     mode.innerHTML = `
-      <option value="human" ${slot.type === "human" ? "selected" : ""}>Human</option>
-      <option value="ai" ${slot.type === "ai" ? "selected" : ""}>AI</option>
+      <option value="human" ${selectedMode === "human" ? "selected" : ""}>Human</option>
+      <option value="ai_medium" ${selectedMode === "ai_medium" ? "selected" : ""}>AI (Medium)</option>
+      <option value="ai_hard" ${selectedMode === "ai_hard" ? "selected" : ""}>AI (Hard)</option>
     `;
     mode.disabled = !canEdit;
 
     const occ = document.createElement("span");
     occ.className = "tiny muted";
     occ.textContent = slot.type === "ai"
-      ? "AI active"
+      ? `AI ${slot.aiLevel === "hard" ? "Hard" : "Medium"} active`
       : (slot.occupied ? "Occupied" : "Open");
 
     row.appendChild(label);
@@ -1427,8 +1473,11 @@ function saveLobbySetupFromInputs() {
   for (let i = 0; i < lobby.maxPlayers; i++) {
     const slot = lobby.slots[i];
     const raw = (el(`p${i + 1}`)?.value || "").trim();
-    const type = (el(`ptype${i + 1}`)?.value || "human");
+    const modeValue = (el(`ptype${i + 1}`)?.value || "human");
+    const type = (modeValue === "ai_medium" || modeValue === "ai_hard") ? "ai" : "human";
+    const aiLevel = modeValue === "ai_hard" ? "hard" : (type === "ai" ? "medium" : null);
     slot.type = type;
+    slot.aiLevel = aiLevel;
     if (type === "ai") {
       slot.occupied = true;
       slot.name = raw || `AI ${i + 1}`;
@@ -1454,8 +1503,11 @@ function collectSetupPayloadFromInputs() {
     const inputEl = el(`p${i + 1}`);
     const modeEl = el(`ptype${i + 1}`);
     const raw = ((inputEl ? inputEl.value : existing.name) || "").trim();
-    const type = (modeEl ? modeEl.value : existing.type) || "human";
-    slots.push({ name: raw, type });
+    const modeValue = modeEl ? modeEl.value : (existing.type === "ai" ? `ai_${existing.aiLevel || "medium"}` : "human");
+    const isAi = modeValue === "ai_medium" || modeValue === "ai_hard";
+    const type = isAi ? "ai" : "human";
+    const aiLevel = modeValue === "ai_hard" ? "hard" : (isAi ? "medium" : null);
+    slots.push({ name: raw, type, aiLevel });
   }
   return { maxPlayers, slots };
 }
@@ -1638,33 +1690,44 @@ function runAiAction() {
   if (actorIndex === null || actorIndex === undefined) return;
   const actor = state.players[actorIndex];
   if (!actor?.isAI) return;
+  const level = aiDifficulty(actor);
 
   if (state.phase === "offerDiscard") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
-    const baseUtility = handUtilityForCurrentRound(actor, actor.hand);
-    const withDiscardUtility = topDiscard ? handUtilityForCurrentRound(actor, [...actor.hand, topDiscard]) : baseUtility;
+    const utilityFn = level === "hard" ? hardHandUtilityForRound : handUtilityForCurrentRound;
+    const baseUtility = utilityFn(actor, actor.hand);
+    const withDiscardUtility = topDiscard ? utilityFn(actor, [...actor.hand, topDiscard]) : baseUtility;
     const utilityDelta = withDiscardUtility - baseUtility;
-    const shouldTake = utilityDelta > 2 || randomChance(0.12 + Math.min(0.45, Math.max(0, utilityDelta / 10)));
+    const shouldTake = level === "hard"
+      ? (utilityDelta > 1.2 || randomChance(hardProbabilityFromDelta(utilityDelta, 0.12, 7, 0.95)))
+      : (utilityDelta > 2 || randomChance(0.12 + Math.min(0.45, Math.max(0, utilityDelta / 10))));
     offerDiscardDecision(shouldTake);
     return;
   }
 
   if (state.phase === "buying") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
-    const baseUtility = handUtilityForCurrentRound(actor, actor.hand);
-    const withDiscardPenalty = topDiscard ? handUtilityForCurrentRound(actor, [...actor.hand, topDiscard]) - 8 : baseUtility - 8;
+    const utilityFn = level === "hard" ? hardHandUtilityForRound : handUtilityForCurrentRound;
+    const baseUtility = utilityFn(actor, actor.hand);
+    const withDiscardPenalty = topDiscard ? utilityFn(actor, [...actor.hand, topDiscard]) - 8 : baseUtility - 8;
     const utilityDelta = withDiscardPenalty - baseUtility;
-    const shouldBuy = utilityDelta > 3 || randomChance(0.06 + Math.min(0.35, Math.max(0, utilityDelta / 12)));
+    const shouldBuy = level === "hard"
+      ? (utilityDelta > 1.8 || randomChance(hardProbabilityFromDelta(utilityDelta, 0.07, 8, 0.82)))
+      : (utilityDelta > 3 || randomChance(0.06 + Math.min(0.35, Math.max(0, utilityDelta / 12))));
     buyerDecision(shouldBuy);
     return;
   }
 
   if (state.phase === "currentDraw") {
     const topDiscard = state.discardPile[state.discardPile.length - 1];
-    const baseUtility = handUtilityForCurrentRound(actor, actor.hand);
-    const withDiscard = topDiscard ? handUtilityForCurrentRound(actor, [...actor.hand, topDiscard]) : baseUtility;
+    const utilityFn = level === "hard" ? hardHandUtilityForRound : handUtilityForCurrentRound;
+    const baseUtility = utilityFn(actor, actor.hand);
+    const withDiscard = topDiscard ? utilityFn(actor, [...actor.hand, topDiscard]) : baseUtility;
     const utilityDelta = withDiscard - baseUtility;
-    if (topDiscard && (utilityDelta > 1 || randomChance(0.2 + Math.min(0.45, Math.max(0, utilityDelta / 10))))) {
+    const shouldTakeDiscard = level === "hard"
+      ? !!topDiscard && (utilityDelta > 0.65 || randomChance(hardProbabilityFromDelta(utilityDelta, 0.2, 7, 0.9)))
+      : !!topDiscard && (utilityDelta > 1 || randomChance(0.2 + Math.min(0.45, Math.max(0, utilityDelta / 10))));
+    if (shouldTakeDiscard) {
       currentDraw("discard");
     } else {
       currentDraw("deck");
@@ -1673,7 +1736,8 @@ function runAiAction() {
   }
 
   if (state.phase === "mainAction") {
-    aiMainAction(actor);
+    if (level === "hard") aiMainActionHard(actor);
+    else aiMainAction(actor);
   }
 }
 
@@ -1722,6 +1786,62 @@ function aiMainAction(player) {
   }
 
   const discard = chooseDiscardCardAI(player);
+  if (!discard) return;
+  state.selectedCardIds.clear();
+  state.selectedCardIds.add(cardId(discard));
+  discardSelected();
+}
+
+function aiMainActionHard(player) {
+  if (!player.hasMetRound) {
+    const plan = pickBestRoundPlan(player.hand, state.round);
+    if (plan) {
+      state.draftMelds = plan.melds.map((m) => ({ type: m.type, cards: [...m.cards] }));
+      submitRoundMelds();
+      if (state.phase !== "mainAction") return;
+    }
+  }
+
+  if (player.hasMetRound) {
+    let changed = true;
+    let safety = 0;
+    while (changed && safety < 60) {
+      changed = false;
+      safety += 1;
+      let bestCard = null;
+      let bestMeld = null;
+      let bestGain = -1;
+
+      for (const card of player.hand) {
+        for (const meld of state.tableMelds) {
+          const check = validateMeldByType(meld.type, [...meld.cards, card]);
+          if (!check.ok) continue;
+          const gain = cardPoints(card);
+          if (gain > bestGain) {
+            bestGain = gain;
+            bestCard = card;
+            bestMeld = meld;
+          }
+        }
+      }
+
+      if (bestCard && bestMeld) {
+        bestMeld.cards.push(bestCard);
+        if (bestMeld.type === "run") {
+          bestMeld.cards = orderRunCardsLowToHigh(bestMeld.cards);
+        }
+        removeCardsFromHand(player, [bestCard]);
+        addLog(`${player.name} laid off ${cardLabel(bestCard)} to Meld #${bestMeld.id}.`);
+        changed = true;
+        if (player.hand.length === 0) {
+          handlePlayerWentOut(state.currentPlayer);
+          return;
+        }
+      }
+    }
+  }
+
+  const discard = chooseDiscardCardAIHard(player) || chooseDiscardCardAI(player);
   if (!discard) return;
   state.selectedCardIds.clear();
   state.selectedCardIds.add(cardId(discard));

@@ -75,6 +75,7 @@ export class LobbyStore {
       if (i === 0) {
         slots.push({
           type: "human",
+          aiLevel: null,
           occupied: true,
           name: ownerSession.name,
           occupantSessionId: ownerSession.id,
@@ -83,6 +84,7 @@ export class LobbyStore {
       } else {
         slots.push({
           type: "human",
+          aiLevel: null,
           occupied: false,
           name: "",
           occupantSessionId: null,
@@ -183,6 +185,7 @@ export class LobbyStore {
       const playerIndex = lobby.seatToPlayer ? lobby.seatToPlayer[idx] : undefined;
       if (playerIndex !== undefined && lobby.gameState.players?.[playerIndex]) {
         lobby.gameState.players[playerIndex].isAI = false;
+        lobby.gameState.players[playerIndex].aiLevel = null;
         lobby.gameState.players[playerIndex].name = session.name;
       }
     }
@@ -240,7 +243,7 @@ export class LobbyStore {
     const targetSize = clampPlayers(maxPlayers);
 
     while (lobby.slots.length < targetSize) {
-      lobby.slots.push({ type: "human", occupied: false, name: "", occupantSessionId: null, isOwner: false });
+      lobby.slots.push({ type: "human", aiLevel: null, occupied: false, name: "", occupantSessionId: null, isOwner: false });
     }
     if (lobby.slots.length > targetSize) {
       lobby.slots = lobby.slots.slice(0, targetSize);
@@ -253,17 +256,22 @@ export class LobbyStore {
         if (!incoming) continue;
         const existing = lobby.slots[i];
         const newType = incoming.type === "ai" ? "ai" : "human";
+        const aiLevel = incoming.aiLevel === "hard" ? "hard" : "medium";
         existing.type = newType;
 
         if (newType === "ai") {
+          existing.aiLevel = aiLevel;
           existing.occupied = true;
           existing.occupantSessionId = null;
           existing.name = normalizeName(incoming.name, `AI ${i + 1}`);
-        } else if (existing.isOwner) {
-          existing.occupied = true;
-          existing.name = normalizeName(incoming.name, existing.name || "Owner");
-        } else if (!existing.occupied) {
-          existing.name = normalizeName(incoming.name, "");
+        } else {
+          existing.aiLevel = null;
+          if (existing.isOwner) {
+            existing.occupied = true;
+            existing.name = normalizeName(incoming.name, existing.name || "Owner");
+          } else if (!existing.occupied) {
+            existing.name = normalizeName(incoming.name, "");
+          }
         }
       }
     }
@@ -286,7 +294,7 @@ export class LobbyStore {
       const s = lobby.slots[i];
       if (s.type === "ai") {
         seatToPlayer[i] = activePlayers.length;
-        activePlayers.push({ name: s.name, isAI: true });
+        activePlayers.push({ name: s.name, isAI: true, aiLevel: s.aiLevel === "hard" ? "hard" : "medium" });
       } else if (s.occupied && s.name) {
         seatToPlayer[i] = activePlayers.length;
         activePlayers.push({ name: s.name, isAI: false, sessionId: s.occupantSessionId });
@@ -406,6 +414,7 @@ export class LobbyStore {
       cardBackStyle: lobby.cardBackStyle,
       slots: lobby.slots.map((s) => ({
         type: s.type,
+        aiLevel: s.aiLevel || null,
         occupied: s.occupied,
         name: s.name,
         isOwner: s.isOwner

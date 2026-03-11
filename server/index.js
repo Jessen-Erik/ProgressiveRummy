@@ -288,6 +288,7 @@ io.on("connection", (socket) => {
         const aiNameBase = slot.name || session.name || `Player ${i + 1}`;
         const aiName = aiNameBase.endsWith(" (AI)") ? aiNameBase : `${aiNameBase} (AI)`;
         slot.type = "ai";
+        slot.aiLevel = "medium";
         slot.occupied = true;
         slot.name = aiName;
         slot.occupantSessionId = null;
@@ -296,11 +297,13 @@ io.on("connection", (socket) => {
         const gamePlayer = playerIndex !== undefined ? lobby.gameState?.players?.[playerIndex] : null;
         if (gamePlayer) {
           gamePlayer.isAI = true;
+          gamePlayer.aiLevel = "medium";
           gamePlayer.name = aiName;
         }
       } else {
         // Setup phase: seat becomes open again.
         slot.type = "human";
+        slot.aiLevel = null;
         slot.occupied = false;
         slot.name = "";
         slot.occupantSessionId = null;
