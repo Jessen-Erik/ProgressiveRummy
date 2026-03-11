@@ -242,15 +242,33 @@ io.on("connection", (socket) => {
       if (session.role === "spectator") return fail(socket, "Spectators cannot submit game actions.");
       if (!payload.gameState || typeof payload.gameState !== "object") return fail(socket, "Missing game state payload.");
       const activePhase = lobby.gameState?.phase;
+      const currentPlayerIdx = Number.isInteger(lobby.gameState?.currentPlayer) ? lobby.gameState.currentPlayer : undefined;
+      const currentPlayer = currentPlayerIdx !== undefined ? lobby.gameState?.players?.[currentPlayerIdx] : null;
+      const sessionPlayerIdx = lobby.seatToPlayer ? lobby.seatToPlayer[session.seatIndex] : undefined;
+      const isOwnerSession = session.id === lobby.ownerSessionId;
+
+      // Authorize by the server's current phase/actor, not by client-provided next state.
       if (activePhase === "buying") {
         const buyerIdx = lobby.gameState?.buyingOrder?.[lobby.gameState?.buyingIndex];
         const buyerPlayer = buyerIdx !== undefined ? lobby.gameState?.players?.[buyerIdx] : null;
         if (buyerPlayer && !buyerPlayer.isAI) {
-          const sessionPlayerIdx = lobby.seatToPlayer ? lobby.seatToPlayer[session.seatIndex] : undefined;
           if (sessionPlayerIdx !== buyerIdx) {
             return fail(socket, "Only the prompted buyer can decide during buying phase.");
           }
+        } else if (buyerPlayer?.isAI && !isOwnerSession) {
+          return fail(socket, "Only lobby owner can advance AI buying decisions.");
         }
+      } else if (["offerDiscard", "currentDraw", "mainAction"].includes(activePhase)) {
+        if (currentPlayer && !currentPlayer.isAI) {
+          if (sessionPlayerIdx !== currentPlayerIdx) {
+            return fail(socket, "Only the current turn player can act.");
+          }
+        } else if (currentPlayer?.isAI && !isOwnerSession) {
+          return fail(socket, "Only lobby owner can advance AI turns.");
+        }
+      } else if (!isOwnerSession) {
+        // For any other in-progress transitional phases, keep writes owner-authoritative.
+        return fail(socket, "Only lobby owner can sync state during this phase.");
       }
       const previousRound = lobby.round;
       lobby.gameState = payload.gameState;
