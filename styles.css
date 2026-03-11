@@ -527,6 +527,33 @@ input[type="text"], input[type="number"], select {
   margin: 0 auto;
 }
 
+.pile-box .card-back {
+  margin: 0 auto;
+}
+
+#lastDiscardTakenBox .mini-discard-card {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+#lastDiscardTakenBox .playing-card {
+  width: 52px;
+  height: 74px;
+  padding: 4px;
+}
+
+#lastDiscardTakenBox .playing-card .corner-top,
+#lastDiscardTakenBox .playing-card .corner-bottom {
+  font-size: 0.68rem;
+}
+
+#lastDiscardTakenBox .playing-card .center {
+  font-size: 0.9rem;
+}
+
 .playing-card.discard-changed {
   animation: discardPulse 450ms ease-out;
 }

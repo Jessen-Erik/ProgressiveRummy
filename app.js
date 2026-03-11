@@ -87,7 +87,11 @@ const state = {
   roundRevealEndsAt: 0,
   roundRevealShownFor: 0,
   roundRevealPending: false,
-  aiPickedDiscardCardId: null
+  aiPickedDiscardCardId: null,
+  lastDiscardTaken: {
+    card: null,
+    destination: ""
+  }
 };
 state.selectedCardBackStyle = 1;
 
@@ -161,6 +165,7 @@ function applyGameStateSnapshot(gameState) {
     : null;
   state.turnDiscardDecisionMade = !!gameState.turnDiscardDecisionMade;
   state.turnDeclinedDiscardOffer = !!gameState.turnDeclinedDiscardOffer;
+  state.lastDiscardTaken = gameState.lastDiscardTaken || { card: null, destination: "" };
   if (gameState.round !== previousRound && state.roundRevealShownFor !== gameState.round) {
     state.roundRevealShownFor = gameState.round;
     state.roundRevealEndsAt = 0;
@@ -493,6 +498,7 @@ function serializeCurrentGameState() {
     draftMelds: state.draftMelds,
     turnDiscardDecisionMade: state.turnDiscardDecisionMade,
     turnDeclinedDiscardOffer: state.turnDeclinedDiscardOffer,
+    lastDiscardTaken: state.lastDiscardTaken,
     buyingOrder: state.buyingOrder,
     buyingIndex: state.buyingIndex,
     discardBoughtBy: state.discardBoughtBy,
@@ -529,6 +535,14 @@ function beginTurnForPlayer(idx) {
   state.turnDeclinedDiscardOffer = false;
   state.aiPickedDiscardCardId = null;
   markTurnTaken(idx);
+}
+
+function rememberDiscardDestination(card, destination) {
+  if (!card) return;
+  state.lastDiscardTaken = {
+    card: { ...card },
+    destination: destination || ""
+  };
 }
 
 function handlePlayerWentOut(winnerIndex) {
@@ -1232,6 +1246,7 @@ function startRound() {
   state.roundRevealShownFor = state.round;
   state.roundRevealEndsAt = 0;
   state.roundRevealPending = true;
+  state.lastDiscardTaken = { card: null, destination: "" };
 
   addLog(`Round ${state.round} started. Dealer: ${state.players[state.dealerIndex].name}. ${state.players[state.currentPlayer].name} begins.`);
   renderAll();
@@ -1930,6 +1945,7 @@ function offerDiscardDecision(take) {
     const taken = state.discardPile.pop();
     p.hand.push(taken);
     if (taken) animateCardToPlayer({ fromElementId: "discardPileVisual", toPlayerIndex: state.currentPlayer, card: taken });
+    rememberDiscardDestination(taken, `${p.name} picked it up (discard offer).`);
     state.turnDeclinedDiscardOffer = false;
     state.aiPickedDiscardCardId = p.isAI && taken ? cardId(taken) : null;
     state.phase = "mainAction";
@@ -1989,6 +2005,7 @@ function buyerDecision(buy) {
     if (boughtCard) buyer.hand.push(boughtCard);
     if (boughtCard) {
       animateCardToPlayer({ fromElementId: "discardPileVisual", toPlayerIndex: buyerIdx, card: boughtCard });
+      rememberDiscardDestination(boughtCard, `${buyer.name} bought it.`);
     }
     const penalty = drawOne();
     if (penalty) {
@@ -2034,6 +2051,7 @@ function currentDraw(source) {
     p.hand.push(card);
     if (source === "discard") {
       animateCardToPlayer({ fromElementId: "discardPileVisual", toPlayerIndex: state.currentPlayer, card });
+      rememberDiscardDestination(card, `${p.name} drew it from discard.`);
     }
     state.aiPickedDiscardCardId = (p.isAI && source === "discard") ? cardId(card) : null;
     addLog(`${p.name} drew ${cardLabel(card)} from ${source === "discard" ? "discard" : "draw"} pile.`);
@@ -2269,6 +2287,8 @@ function renderPiles() {
   const lobby = activeLobby();
   const backStyle = lobby?.cardBackStyle || 1;
   const topDiscard = state.discardPile[state.discardPile.length - 1];
+  const lastTaken = state.lastDiscardTaken?.card || null;
+  const lastTakenDest = state.lastDiscardTaken?.destination || "";
   const topId = topDiscard ? cardId(topDiscard) : null;
   const isNewDiscard = !!topDiscard && state.lastDiscardRenderId && state.lastDiscardRenderId !== topId;
   state.lastDiscardRenderId = topId;
@@ -2282,6 +2302,12 @@ function renderPiles() {
       ${topDiscard
     ? `<div id="discardPileVisual">${renderCardModel(topDiscard, { extraClass: isNewDiscard ? "discard-changed" : "" })}</div>`
     : `<div id="discardPileVisual" class="tiny muted">(empty)</div>`}
+    </div>
+    <div class="pile-box" id="lastDiscardTakenBox">
+      <div class="pile-title">Last Discard Taken</div>
+      ${lastTaken
+    ? `<div class="mini-discard-card">${renderCardModel(lastTaken)}</div><div class="tiny muted">${lastTakenDest}</div>`
+    : `<div class="tiny muted">(none yet)</div>`}
     </div>
   `;
 }
