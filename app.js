@@ -84,7 +84,8 @@ const state = {
   showRoundSummary: false,
   roundRevealEndsAt: 0,
   roundRevealShownFor: 0,
-  roundRevealPending: false
+  roundRevealPending: false,
+  aiPickedDiscardCardId: null
 };
 state.selectedCardBackStyle = 1;
 
@@ -515,6 +516,7 @@ function beginTurnForPlayer(idx) {
   state.buyingOrder = [];
   state.buyingIndex = 0;
   state.turnDiscardDecisionMade = false;
+  state.aiPickedDiscardCardId = null;
   markTurnTaken(idx);
 }
 
@@ -872,7 +874,13 @@ function chooseDiscardCardAI(player) {
   const discardPool = player.hand.some((c) => !isWild(c))
     ? player.hand.filter((c) => !isWild(c))
     : [...player.hand];
-  const ranked = discardPool
+  const protectedCardId = (player?.isAI && state.players[state.currentPlayer] === player)
+    ? state.aiPickedDiscardCardId
+    : null;
+  const candidatePool = (protectedCardId && discardPool.length > 1)
+    ? discardPool.filter((c) => cardId(c) !== protectedCardId)
+    : discardPool;
+  const ranked = candidatePool
     .map((c) => ({ c, score: cardKeepScore(player.hand, c) + Math.random() * 0.2 }))
     .sort((a, b) => a.score - b.score);
   return ranked[0]?.c || null;
@@ -911,7 +919,13 @@ function chooseDiscardCardAIHard(player) {
   const discardPool = player.hand.some((c) => !isWild(c))
     ? player.hand.filter((c) => !isWild(c))
     : [...player.hand];
-  const ranked = discardPool
+  const protectedCardId = (player?.isAI && state.players[state.currentPlayer] === player)
+    ? state.aiPickedDiscardCardId
+    : null;
+  const candidatePool = (protectedCardId && discardPool.length > 1)
+    ? discardPool.filter((c) => cardId(c) !== protectedCardId)
+    : discardPool;
+  const ranked = candidatePool
     .map((candidate) => {
       const simulated = player.hand.filter((c) => cardId(c) !== cardId(candidate));
       const utility = hardHandUtilityForRound(player, simulated);
@@ -1893,7 +1907,9 @@ function offerDiscardDecision(take) {
   state.turnDiscardDecisionMade = true;
 
   if (take) {
-    p.hand.push(state.discardPile.pop());
+    const taken = state.discardPile.pop();
+    p.hand.push(taken);
+    state.aiPickedDiscardCardId = p.isAI && taken ? cardId(taken) : null;
     state.phase = "mainAction";
     addLog(`${p.name} picked up from discard pile.`);
   } else {
@@ -1983,6 +1999,7 @@ function currentDraw(source) {
     addLog(`${p.name} could not draw a card (no cards available).`);
   } else {
     p.hand.push(card);
+    state.aiPickedDiscardCardId = (p.isAI && source === "discard") ? cardId(card) : null;
     addLog(`${p.name} drew ${cardLabel(card)} from ${source === "discard" ? "discard" : "draw"} pile.`);
   }
   state.phase = "mainAction";
