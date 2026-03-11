@@ -2207,6 +2207,8 @@ function discardSelected() {
     return;
   }
   const c = cards[0];
+  const discarderIdx = state.currentPlayer;
+  animateCardFromPlayerToElement({ fromPlayerIndex: discarderIdx, toElementId: "discardPileVisual", card: c });
 
   removeCardsFromHand(p, [c]);
   state.discardPile.push(c);
@@ -2291,6 +2293,14 @@ function renderPiles() {
   const lastTakenDest = state.lastDiscardTaken?.destination || "";
   const topId = topDiscard ? cardId(topDiscard) : null;
   const isNewDiscard = !!topDiscard && state.lastDiscardRenderId && state.lastDiscardRenderId !== topId;
+  const turnPlayer = currentPlayerObj();
+  const showDiscardLayoffHint = !!topDiscard
+    && state.phase === "offerDiscard"
+    && state.currentPlayer === state.viewerIndex
+    && !!turnPlayer
+    && !turnPlayer.isAI
+    && !!turnPlayer.hasMetRound
+    && canCardPlayOnActiveMelds(topDiscard);
   state.lastDiscardRenderId = topId;
   el("pileArea").innerHTML = `
     <div class="pile-box">
@@ -2300,7 +2310,7 @@ function renderPiles() {
     <div class="pile-box">
       <div class="pile-title">Current Discard</div>
       ${topDiscard
-    ? `<div id="discardPileVisual">${renderCardModel(topDiscard, { extraClass: isNewDiscard ? "discard-changed" : "" })}</div>`
+    ? `<div id="discardPileVisual">${renderCardModel(topDiscard, { extraClass: [isNewDiscard ? "discard-changed" : "", showDiscardLayoffHint ? "discard-layoff-hint" : ""].filter(Boolean).join(" ") })}</div>`
     : `<div id="discardPileVisual" class="tiny muted">(empty)</div>`}
     </div>
     <div class="pile-box" id="lastDiscardTakenBox">
@@ -2334,6 +2344,50 @@ function animateCardToPlayer({ fromElementId, toPlayerIndex, card = null, faceDo
     flying.innerHTML = renderCardModel(card, { disabled: true });
   } else {
     flying.innerHTML = `<div class="card-back"></div>`;
+  }
+  layer.appendChild(flying);
+
+  const startX = fromRect.left + fromRect.width / 2 - 36;
+  const startY = fromRect.top + fromRect.height / 2 - 51;
+  const endX = toRect.left + toRect.width / 2 - 36;
+  const endY = toRect.top + toRect.height / 2 - 51;
+
+  flying.style.left = `${startX}px`;
+  flying.style.top = `${startY}px`;
+
+  window.setTimeout(() => {
+    requestAnimationFrame(() => {
+      flying.classList.add("is-animating");
+      flying.style.transform = `translate(${endX - startX}px, ${endY - startY}px) scale(0.86)`;
+      flying.style.opacity = "0.92";
+    });
+  }, Math.max(0, Number(delayMs) || 0));
+
+  window.setTimeout(() => {
+    layer.remove();
+  }, 1200 + Math.max(0, Number(delayMs) || 0));
+}
+
+function animateCardFromPlayerToElement({ fromPlayerIndex, toElementId, card = null, delayMs = 0 }) {
+  const from = document.querySelector(`#playersBoard .player-figure[data-player-idx="${fromPlayerIndex}"]`);
+  const to = document.getElementById(toElementId);
+  if (!from || !to) return;
+
+  const fromRect = from.getBoundingClientRect();
+  const toRect = to.getBoundingClientRect();
+  if (fromRect.width === 0 || fromRect.height === 0 || toRect.width === 0 || toRect.height === 0) return;
+
+  const layer = document.createElement("div");
+  layer.className = "card-transfer-layer";
+  document.body.appendChild(layer);
+
+  const flying = document.createElement("div");
+  flying.className = "card-transfer-item";
+  if (card) {
+    flying.innerHTML = renderCardModel(card, { disabled: true });
+  } else {
+    const backStyle = activeLobby()?.cardBackStyle || 1;
+    flying.innerHTML = `<div class="card-back back-style-${backStyle}"></div>`;
   }
   layer.appendChild(flying);
 
