@@ -7,7 +7,7 @@ import express from "express";
 import { Server } from "socket.io";
 
 import { EVENTS, GAME_ACTIONS } from "../shared/events.js";
-import { LobbyStore } from "./state/store.js";
+import { LobbyStore, randomAiBuyBotName } from "./state/store.js";
 import { ResultsDb } from "./state/results-db.js";
 import { buildInitialGameState, scrubSnapshotForViewer } from "./state/rules.js";
 
@@ -307,8 +307,7 @@ io.on("connection", (socket) => {
 
       if (lobby.phase === "in_progress") {
         // Human leaves an active game: AI immediately takes over this seat.
-        const aiNameBase = slot.name || session.name || `Player ${i + 1}`;
-        const aiName = aiNameBase.endsWith(" (AI)") ? aiNameBase : `${aiNameBase} (AI)`;
+        const aiName = randomAiBuyBotName();
         slot.type = "ai";
         slot.aiLevel = "medium";
         slot.occupied = true;

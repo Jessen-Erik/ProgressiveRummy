@@ -1545,7 +1545,7 @@ function saveLobbySetupFromInputs() {
     slot.aiLevel = aiLevel;
     if (type === "ai") {
       slot.occupied = true;
-      slot.name = raw || `AI ${i + 1}`;
+      slot.name = raw || slot.name || "";
     } else {
       if (slot.isOwner) {
         slot.occupied = true;

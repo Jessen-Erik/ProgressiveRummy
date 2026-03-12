@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 const MAX_PLAYERS = 7;
 const MIN_PLAYERS = 2;
+const AI_NAME_POOL = ["Dean", "Carolyn", "Deana", "Lee Ann", "Ryan", "Ben", "Holly", "Dave", "Erik", "Erica"];
 
 function clampPlayers(value) {
   const n = Number(value);
@@ -12,6 +13,11 @@ function clampPlayers(value) {
 function normalizeName(name, fallback = "Player") {
   const safe = String(name ?? "").trim();
   return safe.slice(0, 24) || fallback;
+}
+
+export function randomAiBuyBotName() {
+  const idx = Math.floor(Math.random() * AI_NAME_POOL.length);
+  return `${AI_NAME_POOL[idx]} Buy Bot`;
 }
 
 export class LobbyStore {
@@ -264,7 +270,13 @@ export class LobbyStore {
           existing.aiLevel = aiLevel;
           existing.occupied = true;
           existing.occupantSessionId = null;
-          existing.name = normalizeName(incoming.name, `AI ${i + 1}`);
+          const requestedName = String(incoming.name ?? "").trim();
+          const isGenericAiName = /^AI\s+\d+$/i.test(requestedName);
+          const fallbackName = randomAiBuyBotName();
+          existing.name = normalizeName(
+            (!requestedName || isGenericAiName) ? fallbackName : requestedName,
+            fallbackName
+          );
         } else {
           existing.aiLevel = null;
           if (existing.isOwner) {
