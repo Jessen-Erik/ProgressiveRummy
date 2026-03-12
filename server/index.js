@@ -7,7 +7,7 @@ import express from "express";
 import { Server } from "socket.io";
 
 import { EVENTS, GAME_ACTIONS } from "../shared/events.js";
-import { LobbyStore, randomAiBuyBotName } from "./state/store.js";
+import { LobbyStore, uniqueAiBuyBotName } from "./state/store.js";
 import { ResultsDb } from "./state/results-db.js";
 import { buildInitialGameState, scrubSnapshotForViewer } from "./state/rules.js";
 
@@ -307,7 +307,10 @@ io.on("connection", (socket) => {
 
       if (lobby.phase === "in_progress") {
         // Human leaves an active game: AI immediately takes over this seat.
-        const aiName = randomAiBuyBotName();
+        const usedNames = lobby.slots
+          .map((s, idx) => (idx === i ? "" : s.name))
+          .filter(Boolean);
+        const aiName = uniqueAiBuyBotName(usedNames);
         slot.type = "ai";
         slot.aiLevel = "medium";
         slot.occupied = true;

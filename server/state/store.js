@@ -4,6 +4,23 @@ const MAX_PLAYERS = 7;
 const MIN_PLAYERS = 2;
 const AI_NAME_POOL = ["Dean", "Carolyn", "Deana", "Lee Ann", "Ryan", "Ben", "Holly", "Dave", "Erik", "Erica"];
 
+function nameKey(name) {
+  return String(name ?? "").trim().toLowerCase();
+}
+
+function ensureUniqueName(preferred, usedNameKeys) {
+  const base = normalizeName(preferred, "Player");
+  let candidate = base;
+  let suffix = 2;
+  while (usedNameKeys.has(nameKey(candidate))) {
+    const suffixText = ` ${suffix}`;
+    const maxBaseLen = Math.max(1, 24 - suffixText.length);
+    candidate = `${base.slice(0, maxBaseLen)}${suffixText}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function clampPlayers(value) {
   const n = Number(value);
   if (Number.isNaN(n)) return 4;
@@ -18,6 +35,22 @@ function normalizeName(name, fallback = "Player") {
 export function randomAiBuyBotName() {
   const idx = Math.floor(Math.random() * AI_NAME_POOL.length);
   return `${AI_NAME_POOL[idx]} Buy Bot`;
+}
+
+export function uniqueAiBuyBotName(usedNames = []) {
+  const usedNameKeys = new Set(
+    (Array.isArray(usedNames) ? usedNames : [])
+      .map((n) => nameKey(n))
+      .filter(Boolean)
+  );
+
+  const candidates = AI_NAME_POOL.map((n) => `${n} Buy Bot`)
+    .filter((n) => !usedNameKeys.has(nameKey(n)));
+  if (candidates.length > 0) {
+    const idx = Math.floor(Math.random() * candidates.length);
+    return candidates[idx];
+  }
+  return ensureUniqueName(randomAiBuyBotName(), usedNameKeys);
 }
 
 export class LobbyStore {
@@ -257,6 +290,7 @@ export class LobbyStore {
     lobby.maxPlayers = targetSize;
 
     if (Array.isArray(slots)) {
+      const usedNameKeys = new Set();
       for (let i = 0; i < lobby.maxPlayers; i++) {
         const incoming = slots[i];
         if (!incoming) continue;
@@ -272,11 +306,10 @@ export class LobbyStore {
           existing.occupantSessionId = null;
           const requestedName = String(incoming.name ?? "").trim();
           const isGenericAiName = /^AI\s+\d+$/i.test(requestedName);
-          const fallbackName = randomAiBuyBotName();
-          existing.name = normalizeName(
-            (!requestedName || isGenericAiName) ? fallbackName : requestedName,
-            fallbackName
-          );
+          const fallbackName = uniqueAiBuyBotName([...usedNameKeys]);
+          const preferred = (!requestedName || isGenericAiName) ? fallbackName : requestedName;
+          existing.name = ensureUniqueName(normalizeName(preferred, fallbackName), usedNameKeys);
+          usedNameKeys.add(nameKey(existing.name));
         } else {
           existing.aiLevel = null;
           if (existing.isOwner) {
@@ -293,6 +326,7 @@ export class LobbyStore {
             existing.occupantSessionId = null;
             existing.name = normalizeName(incoming.name, "");
           }
+          if (existing.name) usedNameKeys.add(nameKey(existing.name));
         }
       }
     }
