@@ -2289,7 +2289,8 @@ function renderPlayersBoard() {
         <div class="figure-head"></div>
         <div class="figure-body"></div>
         <div class="figure-legs"><span></span><span></span></div>
-        <div class="player-name">${p.name}${isYou ? " (You)" : ` (${Array.isArray(p.hand) ? p.hand.length : 0})`}</div>
+        <div class="player-name">${p.name}${isYou ? " (You)" : ""}</div>
+        ${isYou ? "" : `<div class="player-hand-count">${Array.isArray(p.hand) ? p.hand.length : 0}</div>`}
       </div>
     `;
   }).join("");

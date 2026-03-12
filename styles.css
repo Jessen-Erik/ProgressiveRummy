@@ -383,6 +383,7 @@ input[type="text"], input[type="number"], select {
 }
 
 .player-figure {
+  position: relative;
   width: 96px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -493,6 +494,23 @@ input[type="text"], input[type="number"], select {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.player-hand-count {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid #ccbca3;
+  background: #f6ebd9;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  color: #36495c;
 }
 
 .player-figure.you {
